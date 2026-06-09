@@ -3,24 +3,28 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roxy 桌宠</title>
+    <title>Pet Framework</title>
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <main id="stage" aria-label="Roxy 桌宠">
-      <div id="bubble" class="bubble hidden">昌昌，喝水啦</div>
-      <div id="frameworkNotice" class="framework-notice hidden">桌宠框架测试版<br>请替换动画资产和角色配置</div>
-      <div id="pet" class="pet" role="img" aria-label="Roxy"></div>
+    <main id="stage" aria-label="Pet Framework desktop pet">
+      <div id="bubble" class="bubble hidden">该喝水啦</div>
+      <div id="frameworkNotice" class="framework-notice hidden">
+        桌宠框架测试版<br>
+        请替换动画资产和角色配置
+      </div>
+      <div id="pet" class="pet" role="img" aria-label="Pet"></div>
       <div id="controls" class="controls">
         <button id="apiSettings" type="button">接口</button>
         <button id="chatToggle" type="button">聊天</button>
         <button id="stateToggle" type="button">状态</button>
         <button id="languageToggle" type="button">中 / EN</button>
       </div>
+
       <section id="apiPanel" class="api-panel hidden" aria-label="API 设置">
         <div class="api-panel__head">
-          <strong>接口设置</strong>
-          <button id="apiClose" type="button">&#x00D7;</button>
+          <strong>API 设置</strong>
+          <button id="apiClose" type="button" aria-label="关闭 API 设置">&#x00D7;</button>
         </div>
         <label>
           <span>接口地址</span>
@@ -48,21 +52,23 @@
           <button id="apiSave" type="button">保存</button>
         </div>
       </section>
-      <section id="chatPanel" class="chat-panel hidden" aria-label="Roxy 聊天">
+
+      <section id="chatPanel" class="chat-panel hidden" aria-label="Pet Framework 聊天">
         <div class="chat-panel__head">
-          <strong>Roxy</strong>
-          <button id="chatClose" type="button">&#x00D7;</button>
+          <strong>聊天</strong>
+          <button id="chatClose" type="button" aria-label="关闭聊天">&#x00D7;</button>
         </div>
         <div id="chatLog" class="chat-log"></div>
         <form id="chatForm" class="chat-form">
-          <input id="chatInput" type="text" autocomplete="off" maxlength="300" placeholder="和 Roxy 说点什么...">
+          <input id="chatInput" type="text" autocomplete="off" maxlength="300" placeholder="和 Pet 说点什么...">
           <button id="chatSend" type="submit">发送</button>
         </form>
       </section>
-      <section id="statePanel" class="state-panel hidden" aria-label="Roxy 状态与记忆">
+
+      <section id="statePanel" class="state-panel hidden" aria-label="Pet Framework 状态与记忆">
         <div class="state-panel__head">
           <strong>状态</strong>
-          <button id="stateClose" type="button">&#x00D7;</button>
+          <button id="stateClose" type="button" aria-label="关闭状态">&#x00D7;</button>
         </div>
         <div id="stateStatus" class="state-status">加载中...</div>
         <section class="state-block">
@@ -93,7 +99,9 @@
             <button id="clearShortTermMemory" type="button">清空</button>
             <button id="clearExpiredShortTerm" type="button">清理过期</button>
           </div>
-          <p id="shortTermMemoryNote" class="memory-note">短期记忆用于临时上下文，普通聊天不会自动保存到这里。</p>
+          <p id="shortTermMemoryNote" class="memory-note">
+            短期记忆用于临时上下文，普通聊天不会自动保存到这里。
+          </p>
           <div id="shortTermMemoryList" class="memory-list"></div>
         </section>
         <div class="state-danger">

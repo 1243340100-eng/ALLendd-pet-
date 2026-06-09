@@ -42,93 +42,93 @@ const petProfile = window.petProfile || {
   spriteSheet: '',
   usePlaceholderPet: true,
   defaultLanguage: 'zh',
-  defaultDrinkReminderText: '该喝水啦，照顾好自己哦。',
-  defaultNightReminderText: '很晚啦，早点休息，晚安。'
+  defaultDrinkReminderText: '\u8be5\u559d\u6c34\u5566\uff0c\u7167\u987e\u597d\u81ea\u5df1\u54e6\u3002',
+  defaultNightReminderText: '\u5f88\u665a\u5566\uff0c\u65e9\u70b9\u4f11\u606f\uff0c\u665a\u5b89\u3002'
 };
 
 const i18n = {
   zh: {
-    api: '接口',
-    apiSettings: 'API 设置',
-    chat: '聊天',
-    state: '状态',
-    frameworkNotice: '桌宠框架测试版\n请替换动画资产和角色配置',
-    languageToggle: '中 / EN',
-    endpoint: '接口地址',
-    model: '模型',
-    drinkReminderLabel: '喝水提醒词',
-    nightReminderLabel: '晚安提醒词',
-    drinkReminderDefault: petProfile.defaultDrinkReminderText || '该喝水啦，照顾好自己哦。',
-    nightReminderDefault: petProfile.defaultNightReminderText || '很晚啦，早点休息，晚安。',
-    drinkReminderPlaceholder: '留空则使用默认喝水提醒词',
-    nightReminderPlaceholder: '留空则使用默认晚安提醒词',
-    save: '保存',
-    cancel: '取消',
-    clear: '清空',
-    clearExpired: '清理过期',
-    clearAllMemories: '清空全部记忆',
-    chatPlaceholder: '输入你想对 Roxy 说的话',
-    send: '发送',
-    loading: '加载中...',
-    ready: '已就绪',
-    affection: '好感度',
-    relationship: '关系状态',
-    promptStats: 'Prompt 统计',
-    systemPromptChars: 'System Prompt 字符数',
-    injectedMemories: '注入记忆数',
-    historyMessages: '历史消息数',
-    userInputChars: '用户输入字符数',
-    warnings: '警告',
-    none: '无',
-    userMemory: '用户记忆',
-    longTermMemory: '长期记忆',
-    shortTermMemory: '短期记忆',
-    shortTermNote: '短期记忆用于临时上下文，普通聊天不会自动保存到这里。',
-    noMemories: '暂无记忆',
-    empty: '(空)',
-    edit: '编辑',
-    delete: '删除',
-    savedApiKey: '已保存 API Key',
-    apiKeySaved: 'API Key 已保存',
-    noApiKey: '未配置 API Key',
-    saving: '保存中...',
-    apiSavedWithKey: '已保存，API Key 已配置。',
-    apiSavedEmpty: '已保存，API Key 为空。',
-    apiSaveBubble: 'API 配置已保存',
-    apiSaveEmptyBubble: 'API 配置已保存，请稍后填写 Key',
-    saveFailed: '保存失败',
-    apiSaveFailedBubble: 'API 配置保存失败',
-    editMemoryPrompt: '编辑记忆内容：',
-    memoryCannotBeEmptyStatus: '记忆内容不能为空。',
-    memoryCannotBeEmptyBubble: '记忆内容不能为空',
-    memoryTooLong: '记忆内容不能超过 300 字。',
-    memoryUpdated: '记忆已更新。',
-    updateMemoryFailed: '更新记忆失败。',
-    deleteMemoryConfirm: '确定删除这条记忆吗？',
-    memoryDeleted: '记忆已删除。',
-    deleteMemoryFailed: '删除记忆失败。',
-    clearTypeConfirm: '确定清空【{label}】吗？此操作不可恢复。',
-    memoryTypeCleared: '{label}已清空：{count} 条',
-    clearMemoriesFailed: '清空记忆失败。',
-    clearAllConfirmFirst: '确定清空全部记忆吗？包括用户记忆、长期记忆和短期记忆。',
-    clearAllConfirmSecond: '请再次确认：全部记忆将被永久删除，是否继续？',
-    allMemoryCleared: '全部记忆已清空：{count} 条',
-    clearAllFailed: '清空全部记忆失败。',
-    stateLoadFailed: '状态加载失败。',
-    shortTermExpiredCleared: '已清理过期短期记忆：{count} 条',
-    clearExpiredFailed: '清理过期短期记忆失败。',
-    clearFailedBubble: '清理失败',
-    longTermMemorySaved: '好的，我会记得这件事。',
-    userMemorySaved: '我记住啦。',
-    thinking: '我想一下...',
-    emptyReply: '我还没想好怎么回答呢。',
-    apiFailed: '连接 API 失败了，请检查 Key 或网络。',
-    reminderMinutesSet: '已改为 {minutes} 分钟提醒一次',
-    startupBubble: '桌宠框架测试版已启动',
-    ariaStage: 'Pet Framework 桌宠',
-    ariaApiPanel: 'API 设置',
-    ariaChatPanel: 'Pet Framework 聊天',
-    ariaStatePanel: 'Pet Framework 状态与记忆'
+    api: '\u63a5\u53e3',
+    apiSettings: 'API \u8bbe\u7f6e',
+    chat: '\u804a\u5929',
+    state: '\u72b6\u6001',
+    frameworkNotice: '\u684c\u5ba0\u6846\u67b6\u6d4b\u8bd5\u7248\n\u8bf7\u66ff\u6362\u52a8\u753b\u8d44\u4ea7\u548c\u89d2\u8272\u914d\u7f6e',
+    languageToggle: '\u4e2d / EN',
+    endpoint: '\u63a5\u53e3\u5730\u5740',
+    model: '\u6a21\u578b',
+    drinkReminderLabel: '\u559d\u6c34\u63d0\u9192\u8bcd',
+    nightReminderLabel: '\u665a\u5b89\u63d0\u9192\u8bcd',
+    drinkReminderDefault: petProfile.defaultDrinkReminderText || '\u8be5\u559d\u6c34\u5566\uff0c\u7167\u987e\u597d\u81ea\u5df1\u54e6\u3002',
+    nightReminderDefault: petProfile.defaultNightReminderText || '\u5f88\u665a\u5566\uff0c\u65e9\u70b9\u4f11\u606f\uff0c\u665a\u5b89\u3002',
+    drinkReminderPlaceholder: '\u7559\u7a7a\u5219\u4f7f\u7528\u9ed8\u8ba4\u559d\u6c34\u63d0\u9192\u8bcd',
+    nightReminderPlaceholder: '\u7559\u7a7a\u5219\u4f7f\u7528\u9ed8\u8ba4\u665a\u5b89\u63d0\u9192\u8bcd',
+    save: '\u4fdd\u5b58',
+    cancel: '\u53d6\u6d88',
+    clear: '\u6e05\u7a7a',
+    clearExpired: '\u6e05\u7406\u8fc7\u671f',
+    clearAllMemories: '\u6e05\u7a7a\u5168\u90e8\u8bb0\u5fc6',
+    chatPlaceholder: '\u8f93\u5165\u4f60\u60f3\u5bf9 Pet \u8bf4\u7684\u8bdd',
+    send: '\u53d1\u9001',
+    loading: '\u52a0\u8f7d\u4e2d...',
+    ready: '\u5df2\u5c31\u7eea',
+    affection: '\u597d\u611f\u5ea6',
+    relationship: '\u5173\u7cfb\u72b6\u6001',
+    promptStats: 'Prompt \u7edf\u8ba1',
+    systemPromptChars: 'System Prompt \u5b57\u7b26\u6570',
+    injectedMemories: '\u6ce8\u5165\u8bb0\u5fc6\u6570',
+    historyMessages: '\u5386\u53f2\u6d88\u606f\u6570',
+    userInputChars: '\u7528\u6237\u8f93\u5165\u5b57\u7b26\u6570',
+    warnings: '\u8b66\u544a',
+    none: '\u65e0',
+    userMemory: '\u7528\u6237\u8bb0\u5fc6',
+    longTermMemory: '\u957f\u671f\u8bb0\u5fc6',
+    shortTermMemory: '\u77ed\u671f\u8bb0\u5fc6',
+    shortTermNote: '\u77ed\u671f\u8bb0\u5fc6\u7528\u4e8e\u4e34\u65f6\u4e0a\u4e0b\u6587\uff0c\u666e\u901a\u804a\u5929\u4e0d\u4f1a\u81ea\u52a8\u4fdd\u5b58\u5230\u8fd9\u91cc\u3002',
+    noMemories: '\u6682\u65e0\u8bb0\u5fc6',
+    empty: '(\u7a7a)',
+    edit: '\u7f16\u8f91',
+    delete: '\u5220\u9664',
+    savedApiKey: '\u5df2\u4fdd\u5b58 API Key',
+    apiKeySaved: 'API Key \u5df2\u4fdd\u5b58',
+    noApiKey: '\u672a\u914d\u7f6e API Key',
+    saving: '\u4fdd\u5b58\u4e2d...',
+    apiSavedWithKey: '\u5df2\u4fdd\u5b58\uff0cAPI Key \u5df2\u914d\u7f6e\u3002',
+    apiSavedEmpty: '\u5df2\u4fdd\u5b58\uff0cAPI Key \u4e3a\u7a7a\u3002',
+    apiSaveBubble: 'API \u914d\u7f6e\u5df2\u4fdd\u5b58',
+    apiSaveEmptyBubble: 'API \u914d\u7f6e\u5df2\u4fdd\u5b58\uff0c\u8bf7\u7a0d\u540e\u586b\u5199 Key',
+    saveFailed: '\u4fdd\u5b58\u5931\u8d25',
+    apiSaveFailedBubble: 'API \u914d\u7f6e\u4fdd\u5b58\u5931\u8d25',
+    editMemoryPrompt: '\u7f16\u8f91\u8bb0\u5fc6\u5185\u5bb9\uff1a',
+    memoryCannotBeEmptyStatus: '\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a\u3002',
+    memoryCannotBeEmptyBubble: '\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a',
+    memoryTooLong: '\u8bb0\u5fc6\u5185\u5bb9\u4e0d\u80fd\u8d85\u8fc7 300 \u5b57\u3002',
+    memoryUpdated: '\u8bb0\u5fc6\u5df2\u66f4\u65b0\u3002',
+    updateMemoryFailed: '\u66f4\u65b0\u8bb0\u5fc6\u5931\u8d25\u3002',
+    deleteMemoryConfirm: '\u786e\u5b9a\u5220\u9664\u8fd9\u6761\u8bb0\u5fc6\u5417\uff1f',
+    memoryDeleted: '\u8bb0\u5fc6\u5df2\u5220\u9664\u3002',
+    deleteMemoryFailed: '\u5220\u9664\u8bb0\u5fc6\u5931\u8d25\u3002',
+    clearTypeConfirm: '\u786e\u5b9a\u6e05\u7a7a\u3010{label}\u3011\u5417\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\u3002',
+    memoryTypeCleared: '{label}\u5df2\u6e05\u7a7a\uff1a{count} \u6761',
+    clearMemoriesFailed: '\u6e05\u7a7a\u8bb0\u5fc6\u5931\u8d25\u3002',
+    clearAllConfirmFirst: '\u786e\u5b9a\u6e05\u7a7a\u5168\u90e8\u8bb0\u5fc6\u5417\uff1f\u5305\u62ec\u7528\u6237\u8bb0\u5fc6\u3001\u957f\u671f\u8bb0\u5fc6\u548c\u77ed\u671f\u8bb0\u5fc6\u3002',
+    clearAllConfirmSecond: '\u8bf7\u518d\u6b21\u786e\u8ba4\uff1a\u5168\u90e8\u8bb0\u5fc6\u5c06\u88ab\u6c38\u4e45\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f',
+    allMemoryCleared: '\u5168\u90e8\u8bb0\u5fc6\u5df2\u6e05\u7a7a\uff1a{count} \u6761',
+    clearAllFailed: '\u6e05\u7a7a\u5168\u90e8\u8bb0\u5fc6\u5931\u8d25\u3002',
+    stateLoadFailed: '\u72b6\u6001\u52a0\u8f7d\u5931\u8d25\u3002',
+    shortTermExpiredCleared: '\u5df2\u6e05\u7406\u8fc7\u671f\u77ed\u671f\u8bb0\u5fc6\uff1a{count} \u6761',
+    clearExpiredFailed: '\u6e05\u7406\u8fc7\u671f\u77ed\u671f\u8bb0\u5fc6\u5931\u8d25\u3002',
+    clearFailedBubble: '\u6e05\u7406\u5931\u8d25',
+    longTermMemorySaved: '\u597d\u7684\uff0c\u6211\u4f1a\u8bb0\u5f97\u8fd9\u4ef6\u4e8b\u3002',
+    userMemorySaved: '\u6211\u8bb0\u4f4f\u5566\u3002',
+    thinking: '\u6211\u60f3\u4e00\u4e0b...',
+    emptyReply: '\u6211\u8fd8\u6ca1\u60f3\u597d\u600e\u4e48\u56de\u7b54\u5462\u3002',
+    apiFailed: '\u8fde\u63a5 API \u5931\u8d25\u4e86\uff0c\u8bf7\u68c0\u67e5 Key \u6216\u7f51\u7edc\u3002',
+    reminderMinutesSet: '\u5df2\u6539\u4e3a {minutes} \u5206\u949f\u63d0\u9192\u4e00\u6b21',
+    startupBubble: '\u684c\u5ba0\u6846\u67b6\u6d4b\u8bd5\u7248\u5df2\u542f\u52a8',
+    ariaStage: 'Pet Framework \u684c\u5ba0',
+    ariaApiPanel: 'API \u8bbe\u7f6e',
+    ariaChatPanel: 'Pet Framework \u804a\u5929',
+    ariaStatePanel: 'Pet Framework \u72b6\u6001\u4e0e\u8bb0\u5fc6'
   },
   en: {
     api: 'API',
@@ -136,13 +136,13 @@ const i18n = {
     chat: 'Chat',
     state: 'State',
     frameworkNotice: 'Pet Framework Test Mode\nReplace animation assets and character config to create a new pet.',
-    languageToggle: '中 / EN',
+    languageToggle: '\u4e2d / EN',
     endpoint: 'Endpoint',
     model: 'Model',
     drinkReminderLabel: 'Drink reminder',
     nightReminderLabel: 'Good night reminder',
     drinkReminderDefault: 'Time to drink some water. Take care of yourself.',
-    nightReminderDefault: 'It’s late. Get some rest. Good night.',
+    nightReminderDefault: "It's late. Get some rest. Good night.",
     drinkReminderPlaceholder: 'Leave empty to use the default drink reminder',
     nightReminderPlaceholder: 'Leave empty to use the default good night reminder',
     save: 'Save',
@@ -150,7 +150,7 @@ const i18n = {
     clear: 'Clear',
     clearExpired: 'Clear expired',
     clearAllMemories: 'Clear all memories',
-    chatPlaceholder: 'Say something to Roxy',
+    chatPlaceholder: 'Say something to Pet',
     send: 'Send',
     loading: 'Loading...',
     ready: 'Ready',
@@ -859,17 +859,22 @@ async function sendChatMessage(event) {
   }
 }
 
-apiSettings.addEventListener('click', openApiPanel);
-apiClose.addEventListener('click', closeApiPanel);
-apiSave.addEventListener('click', () => saveApiSettings(false));
-apiClearKey.addEventListener('click', () => saveApiSettings(true));
-chatToggle.addEventListener('click', openChatPanel);
-chatClose.addEventListener('click', closeChatPanel);
-chatForm.addEventListener('submit', sendChatMessage);
-stateToggle.addEventListener('click', openStatePanel);
-stateClose.addEventListener('click', closeStatePanel);
-languageToggle.addEventListener('click', toggleLanguage);
-clearExpiredShortTerm.addEventListener('click', async () => {
+function bindEvent(element, eventName, handler) {
+  if (!element) return;
+  element.addEventListener(eventName, handler);
+}
+
+bindEvent(apiSettings, 'click', openApiPanel);
+bindEvent(apiClose, 'click', closeApiPanel);
+bindEvent(apiSave, 'click', () => saveApiSettings(false));
+bindEvent(apiClearKey, 'click', () => saveApiSettings(true));
+bindEvent(chatToggle, 'click', openChatPanel);
+bindEvent(chatClose, 'click', closeChatPanel);
+bindEvent(chatForm, 'submit', sendChatMessage);
+bindEvent(stateToggle, 'click', openStatePanel);
+bindEvent(stateClose, 'click', closeStatePanel);
+bindEvent(languageToggle, 'click', toggleLanguage);
+bindEvent(clearExpiredShortTerm, 'click', async () => {
   try {
     const result = await window.petAPI?.clearExpiredShortTermMemories?.();
     setStateStatus(t('shortTermExpiredCleared', { count: result?.removed || 0 }));
@@ -879,21 +884,21 @@ clearExpiredShortTerm.addEventListener('click', async () => {
     showBubble(t('clearFailedBubble'), 5000);
   }
 });
-clearUserMemory.addEventListener('click', () => clearMemoryType('user'));
-clearLongTermMemory.addEventListener('click', () => clearMemoryType('longTerm'));
-clearShortTermMemory.addEventListener('click', () => clearMemoryType('shortTerm'));
-clearAllMemory.addEventListener('click', clearAllMemoryTypes);
+bindEvent(clearUserMemory, 'click', () => clearMemoryType('user'));
+bindEvent(clearLongTermMemory, 'click', () => clearMemoryType('longTerm'));
+bindEvent(clearShortTermMemory, 'click', () => clearMemoryType('shortTerm'));
+bindEvent(clearAllMemory, 'click', clearAllMemoryTypes);
 
-stage.addEventListener('pointerdown', startDragAnimation);
+bindEvent(stage, 'pointerdown', startDragAnimation);
 window.addEventListener('pointerup', stopDragAnimation);
 window.addEventListener('blur', stopDragAnimation);
 document.addEventListener('mouseleave', stopDragAnimation);
 
-window.petAPI?.onHydrateNow(remindHydration);
-window.petAPI?.onNightNow(nightReminder);
-window.petAPI?.onSetState(setState);
-window.petAPI?.onSetScale((nextScale) => applyScale(nextScale));
-window.petAPI?.onDragDirection((direction) => {
+window.petAPI?.onHydrateNow?.(remindHydration);
+window.petAPI?.onNightNow?.(nightReminder);
+window.petAPI?.onSetState?.(setState);
+window.petAPI?.onSetScale?.((nextScale) => applyScale(nextScale));
+window.petAPI?.onDragDirection?.((direction) => {
   if (!appVisible) return;
   lastDirection = direction === 'left' ? 'left' : 'right';
   dragAnimating = true;
@@ -901,7 +906,7 @@ window.petAPI?.onDragDirection((direction) => {
   clearRestoreTimers();
   setState(lastDirection === 'left' ? 'running-left' : 'running-right');
 });
-window.petAPI?.onSetReminderMinutes((minutes) => {
+window.petAPI?.onSetReminderMinutes?.((minutes) => {
   reminderMinutes = minutes;
   scheduleReminder();
   showBubble(t('reminderMinutesSet', { minutes }), 5000);
@@ -909,8 +914,8 @@ window.petAPI?.onSetReminderMinutes((minutes) => {
   clearRestoreTimers();
   restoreTimers = [setTimeout(() => setState('idle'), 4500)];
 });
-window.petAPI?.onVisibilityMode(setVisibilityMode);
-window.petAPI?.onShowApiSettings(openApiPanel);
+window.petAPI?.onVisibilityMode?.(setVisibilityMode);
+window.petAPI?.onShowApiSettings?.(openApiPanel);
 
 applyPetProfile();
 applyLanguage();

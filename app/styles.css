@@ -51,6 +51,7 @@ body {
   background-size: var(--sheet-w) var(--sheet-h);
   image-rendering: auto;
   filter: drop-shadow(0 8px 10px rgba(40, 31, 54, 0.22));
+  pointer-events: none;
 }
 
 .pet--placeholder {
@@ -86,6 +87,7 @@ body {
 
 .bubble {
   position: absolute;
+  z-index: 15;
   bottom: calc(var(--stage-bottom-pad) + var(--pet-h) + var(--bubble-gap));
   left: 50%;
   max-width: min(calc(272px * var(--scale)), calc(100vw - calc(24px * var(--scale))));
@@ -126,6 +128,7 @@ body {
 
 .controls {
   position: absolute;
+  z-index: 40;
   left: 50%;
   bottom: var(--control-bottom);
   transform: translateX(-50%);
@@ -135,13 +138,15 @@ body {
   width: max-content;
   max-width: calc(100vw - calc(16px * var(--scale)));
   flex-wrap: wrap;
-  opacity: 0;
+  opacity: 1;
+  pointer-events: auto;
   transition: opacity 140ms ease;
   -webkit-app-region: no-drag;
 }
 
 .api-panel {
   position: absolute;
+  z-index: 30;
   left: 50%;
   top: var(--panel-top);
   width: min(calc(292px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
@@ -199,6 +204,7 @@ body {
 
 .chat-panel {
   position: absolute;
+  z-index: 30;
   left: 50%;
   top: var(--panel-top);
   width: min(calc(292px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
@@ -275,6 +281,7 @@ body {
 
 .state-panel {
   position: absolute;
+  z-index: 30;
   left: 50%;
   top: var(--panel-top);
   width: min(calc(300px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
@@ -412,6 +419,20 @@ button {
   font-weight: 700;
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(40, 31, 54, 0.12);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+input,
+textarea,
+select,
+label,
+form,
+.chat-log,
+.memory-list,
+.memory-item {
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 
 button:hover {

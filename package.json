@@ -1,0 +1,41 @@
+{
+  "name": "electron-pet-framework",
+  "version": "1.0.0",
+  "description": "A reusable Electron desktop pet framework with AI chat, memory, reminders, and placeholder test mode.",
+  "main": "app/main.js",
+  "author": "Codex",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "local.pet.framework",
+    "productName": "PetFramework",
+    "electronVersion": "31.7.7",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "app/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

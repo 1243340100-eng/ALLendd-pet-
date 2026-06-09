@@ -1,0 +1,419 @@
+:root {
+  color-scheme: light;
+  --cell-w: 192px;
+  --cell-h: 208px;
+  --scale: 1.18;
+  --pet-w: calc(var(--cell-w) * var(--scale));
+  --pet-h: calc(var(--cell-h) * var(--scale));
+  --sheet-w: calc(1536px * var(--scale));
+  --sheet-h: calc(1872px * var(--scale));
+  --stage-bottom-pad: calc(14px * var(--scale));
+  --bubble-gap: calc(8px * var(--scale));
+  --panel-top: calc(10px * var(--scale));
+  --panel-pad: calc(10px * var(--scale));
+  --control-bottom: calc(10px * var(--scale));
+  --control-gap: calc(6px * var(--scale));
+}
+
+* {
+  box-sizing: border-box;
+  user-select: none;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
+#stage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: var(--stage-bottom-pad);
+  cursor: grab;
+  touch-action: none;
+  -webkit-app-region: drag;
+}
+
+.pet {
+  width: var(--pet-w);
+  height: var(--pet-h);
+  background-image: url("./assets/roxy-spritesheet.webp");
+  background-repeat: no-repeat;
+  background-size: var(--sheet-w) var(--sheet-h);
+  image-rendering: auto;
+  filter: drop-shadow(0 8px 10px rgba(40, 31, 54, 0.22));
+}
+
+.pet--placeholder {
+  background-image: url("./assets/placeholder-pet.svg");
+  background-position: center;
+  background-size: contain;
+}
+
+.framework-notice {
+  position: absolute;
+  top: var(--panel-top);
+  left: 50%;
+  width: min(calc(260px * var(--scale)), calc(100vw - calc(24px * var(--scale))));
+  transform: translateX(-50%);
+  padding: calc(7px * var(--scale)) calc(10px * var(--scale));
+  border: 1px solid rgba(65, 48, 84, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #4c3f5e;
+  font-size: calc(11px * var(--scale));
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 8px 20px rgba(42, 33, 50, 0.14);
+  pointer-events: none;
+  white-space: pre-line;
+  -webkit-app-region: no-drag;
+}
+
+.framework-notice.hidden {
+  display: none;
+}
+
+.bubble {
+  position: absolute;
+  bottom: calc(var(--stage-bottom-pad) + var(--pet-h) + var(--bubble-gap));
+  left: 50%;
+  max-width: min(calc(272px * var(--scale)), calc(100vw - calc(24px * var(--scale))));
+  transform: translateX(-50%);
+  padding: calc(10px * var(--scale)) calc(14px * var(--scale));
+  border: 1px solid rgba(92, 66, 122, 0.22);
+  border-radius: calc(14px * var(--scale));
+  background: rgba(255, 255, 255, 0.95);
+  color: #342940;
+  font-size: calc(17px * var(--scale));
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  box-shadow: 0 calc(10px * var(--scale)) calc(28px * var(--scale)) rgba(42, 33, 50, 0.18);
+  opacity: 1;
+  transition: opacity 160ms ease, transform 160ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: calc(-8px * var(--scale));
+  width: calc(16px * var(--scale));
+  height: calc(16px * var(--scale));
+  background: inherit;
+  border-right: 1px solid rgba(92, 66, 122, 0.18);
+  border-bottom: 1px solid rgba(92, 66, 122, 0.18);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.bubble.hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(calc(6px * var(--scale)));
+  pointer-events: none;
+}
+
+.controls {
+  position: absolute;
+  left: 50%;
+  bottom: var(--control-bottom);
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+  gap: var(--control-gap);
+  width: max-content;
+  max-width: calc(100vw - calc(16px * var(--scale)));
+  flex-wrap: wrap;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.api-panel {
+  position: absolute;
+  left: 50%;
+  top: var(--panel-top);
+  width: min(calc(292px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
+  max-height: calc(100vh - calc(24px * var(--scale)));
+  overflow: auto;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--panel-pad);
+  border: 1px solid rgba(92, 66, 122, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #342940;
+  box-shadow: 0 12px 34px rgba(42, 33, 50, 0.2);
+  -webkit-app-region: no-drag;
+}
+
+.api-panel.hidden {
+  display: none;
+}
+
+.api-panel__head,
+.api-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.api-panel label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.api-panel input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid rgba(65, 48, 84, 0.22);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: #30273b;
+  background: rgba(255, 255, 255, 0.95);
+  font: 12px "Segoe UI", sans-serif;
+}
+
+.api-status {
+  min-height: 16px;
+  color: #6e5b7f;
+  font-size: 12px;
+}
+
+.chat-panel {
+  position: absolute;
+  left: 50%;
+  top: var(--panel-top);
+  width: min(calc(292px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
+  max-height: calc(100vh - calc(24px * var(--scale)));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(92, 66, 122, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #342940;
+  box-shadow: 0 12px 34px rgba(42, 33, 50, 0.2);
+  -webkit-app-region: no-drag;
+}
+
+.chat-panel.hidden {
+  display: none;
+}
+
+.chat-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(250px, calc(100vh - 120px));
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.chat-msg {
+  max-width: 92%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.chat-msg--user {
+  align-self: flex-end;
+  background: #efe8ff;
+}
+
+.chat-msg--assistant {
+  align-self: flex-start;
+  background: #f6f2fb;
+}
+
+.chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+
+.chat-form input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid rgba(65, 48, 84, 0.22);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: #30273b;
+  background: rgba(255, 255, 255, 0.95);
+  font: 12px "Segoe UI", sans-serif;
+}
+
+.state-panel {
+  position: absolute;
+  left: 50%;
+  top: var(--panel-top);
+  width: min(calc(300px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
+  max-height: calc(100vh - calc(24px * var(--scale)));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid rgba(92, 66, 122, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #342940;
+  box-shadow: 0 12px 34px rgba(42, 33, 50, 0.2);
+  -webkit-app-region: no-drag;
+}
+
+.state-panel.hidden {
+  display: none;
+}
+
+.state-panel__head,
+.state-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.state-status {
+  min-height: 16px;
+  color: #6e5b7f;
+  font-size: 12px;
+}
+
+.state-block {
+  display: grid;
+  gap: 5px;
+}
+
+.state-block h2 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.state-kv,
+.memory-list {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.state-kv div,
+.memory-item {
+  border: 1px solid rgba(65, 48, 84, 0.12);
+  border-radius: 6px;
+  background: rgba(246, 242, 251, 0.78);
+  padding: 5px 6px;
+}
+
+.memory-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: start;
+  gap: 6px;
+}
+
+.memory-item--editing {
+  grid-template-columns: 1fr auto auto;
+}
+
+.memory-item__content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.memory-note {
+  margin: 0;
+  color: #806d92;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.memory-edit-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  resize: vertical;
+  border: 1px solid rgba(65, 48, 84, 0.22);
+  border-radius: 6px;
+  padding: 5px 6px;
+  color: #30273b;
+  background: rgba(255, 255, 255, 0.95);
+  font: 12px "Segoe UI", sans-serif;
+  user-select: text;
+}
+
+.memory-empty {
+  color: #806d92;
+}
+
+.memory-delete,
+.memory-edit-save,
+.memory-edit-cancel {
+  min-width: 28px;
+  height: 24px;
+  padding: 0 6px;
+}
+
+.memory-edit {
+  min-width: 32px;
+  height: 24px;
+  padding: 0 6px;
+}
+
+.state-danger {
+  display: flex;
+  justify-content: flex-end;
+}
+
+#stage:hover .controls {
+  opacity: 1;
+}
+
+button {
+  min-width: 34px;
+  height: 30px;
+  border: 1px solid rgba(65, 48, 84, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #30273b;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(40, 31, 54, 0.12);
+}
+
+button:hover {
+  background: #fff;
+}

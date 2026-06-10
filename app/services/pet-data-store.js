@@ -168,6 +168,12 @@ function normalizePetData(input = {}) {
       profileSummaryLastUpdatedAt: typeof prompt.profileSummaryLastUpdatedAt === 'string'
         ? prompt.profileSummaryLastUpdatedAt
         : '',
+      conversationPersonalityId: typeof prompt.conversationPersonalityId === 'string'
+        ? prompt.conversationPersonalityId
+        : '',
+      conversationHarnessState: prompt.conversationHarnessState && typeof prompt.conversationHarnessState === 'object'
+        ? prompt.conversationHarnessState
+        : {},
       lastPromptStats: {
         ...fallback.prompt.lastPromptStats,
         ...(prompt.lastPromptStats && typeof prompt.lastPromptStats === 'object' ? prompt.lastPromptStats : {})

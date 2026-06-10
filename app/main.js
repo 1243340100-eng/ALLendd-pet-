@@ -7,6 +7,11 @@ const memoryService = require('./services/memory-service');
 const affectionService = require('./services/affection-service');
 const { buildRoxyPrompt } = require('./services/prompt-builder');
 const {
+  handleUserMessage: handleHarnessUserMessage,
+  getPersonalityProfile,
+  normalizeConversationState
+} = require('./services/conversation-harness');
+const {
   getDefaultTokenBudget,
   trimTextByChars,
   trimMessagesByBudget,
@@ -255,6 +260,20 @@ function savePromptStats(stats) {
     });
   } catch (error) {
     console.warn('Prompt stats save failed; chat will continue.', error?.message || error);
+  }
+}
+
+function saveHarnessState(nextState) {
+  try {
+    updatePetData(app, (data) => {
+      data.prompt = {
+        ...(data.prompt || {}),
+        conversationHarnessState: normalizeConversationState(nextState)
+      };
+      return data;
+    });
+  } catch (error) {
+    console.warn('Harness state save failed; chat will continue.', error?.message || error);
   }
 }
 
@@ -1065,8 +1084,20 @@ async function sendChatMessage(payload = {}) {
   detectAndApplyAffectionEvent(userText);
 
   let promptBuild;
+  let harnessResult = null;
   try {
     const petData = loadPetData(app);
+    harnessResult = await handleHarnessUserMessage(
+      userText,
+      petData.prompt?.conversationHarnessState,
+      getPersonalityProfile(petData.prompt?.conversationPersonalityId || 'warm_friend')
+    ).catch((error) => {
+      console.warn('Conversation harness failed; chat will continue.', error?.message || error);
+      return null;
+    });
+    if (harnessResult?.newState) {
+      saveHarnessState(harnessResult.newState);
+    }
     const affectionState = {
       ...petData.affection,
       promptHint: affectionService.getAffectionPromptHint(petData.affection)
@@ -1076,6 +1107,7 @@ async function sendChatMessage(payload = {}) {
       memories: petData.memory,
       affection: affectionState,
       historyMessages,
+      harness: harnessResult,
       limits: tokenBudget
     });
   } catch {
@@ -1103,6 +1135,13 @@ async function sendChatMessage(payload = {}) {
     historyMessageCount: historyMessages.length,
     historyChars: historyBudget.chars,
     userInputChars: userText.length,
+    harness: harnessResult ? {
+      leadMode: harnessResult.policy.leadMode,
+      responseDepth: harnessResult.policy.responseDepth,
+      boundaryAction: harnessResult.policy.boundaryAction,
+      playfulness: harnessResult.policy.playfulness,
+      maxMainPoints: harnessResult.policy.maxMainPoints
+    } : null,
     warnings: Array.from(new Set([...(promptBuild.stats.warnings || []), ...budgetWarnings]))
   };
   savePromptStats(promptBuild.stats);

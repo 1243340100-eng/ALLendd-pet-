@@ -188,6 +188,24 @@ function buildAffectionSection(affection = {}) {
   return `\u3010\u5f53\u524d\u5173\u7cfb\u72b6\u6001\u3011\n- ${level} (${score}/100)\uff1a${hint}\n- \u53ea\u4f5c\u8bed\u6c14\u53c2\u8003\uff0c\u4fdd\u6301 Roxy \u7684\u6c89\u7a33\u6559\u5e08\u611f\u548c\u8fb9\u754c\u3002`;
 }
 
+function buildHarnessSection(harness = {}) {
+  if (!harness || typeof harness !== 'object' || !harness.policy || !harness.plan) return '';
+  return [
+    '\u3010\u5bf9\u8bdd\u7b56\u7565\u63a7\u5236\u3011',
+    `- leadMode: ${cleanText(harness.policy.leadMode)}`,
+    `- responseDepth: ${cleanText(harness.policy.responseDepth)}`,
+    `- boundaryAction: ${cleanText(harness.policy.boundaryAction)}`,
+    `- playfulness: ${cleanText(harness.policy.playfulness)}`,
+    `- maxMainPoints: ${Number(harness.policy.maxMainPoints) || 1}`,
+    `- openingStyle: ${cleanText(harness.plan.openingStyle)}`,
+    `- pacing: ${cleanText(harness.plan.pacing)}`,
+    `- mustInclude: ${(harness.plan.mustInclude || []).map(cleanText).filter(Boolean).join(', ') || '\u65e0'}`,
+    `- mustAvoid: ${(harness.plan.mustAvoid || []).map(cleanText).filter(Boolean).join(', ') || '\u65e0'}`,
+    `- toneHints: ${(harness.policy.toneHints || []).map(cleanText).filter(Boolean).join(', ') || '\u65e0'}`,
+    '\u6700\u7ec8\u56de\u590d\u5fc5\u987b\u6267\u884c\u4e0a\u9762\u7684\u7b56\u7565\uff1b\u4e0d\u8981\u81ea\u884c\u589e\u52a0\u6492\u5a07\u3001\u62d2\u7edd\u6216\u4e3b\u52a8\u63a5\u7ba1\u3002'
+  ].join('\n');
+}
+
 function estimatePromptStats(prompt, injectedMemories, historyMessages) {
   return buildPromptBudgetReport({ prompt, injectedMemories, historyMessages });
 }
@@ -207,6 +225,7 @@ function buildRoxyPrompt(options = {}) {
     RESPONSE_STYLE.join('\n'),
     '\u3010\u5b89\u5168\u4e0e\u8fb9\u754c\u3011',
     SAFETY_BOUNDARIES.join('\n'),
+    buildHarnessSection(options.harness),
     buildAffectionSection(options.affection),
     '\u3010\u8f93\u51fa\u9650\u5236\u3011',
     OUTPUT_LIMITS.join('\n')

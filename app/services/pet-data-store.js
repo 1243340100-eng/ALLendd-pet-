@@ -102,6 +102,8 @@ function normalizeMemoryEntry(entry = {}, type = 'user') {
 
   if (type === 'shortTerm') {
     normalized.expiresAt = typeof entry.expiresAt === 'string' ? entry.expiresAt : '';
+    normalized.topic = typeof entry.topic === 'string' ? entry.topic : '';
+    normalized.sourceMessage = typeof entry.sourceMessage === 'string' ? entry.sourceMessage : '';
   }
 
   return normalized;

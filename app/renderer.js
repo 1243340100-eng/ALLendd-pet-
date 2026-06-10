@@ -120,6 +120,7 @@ const i18n = {
     clearFailedBubble: '\u6e05\u7406\u5931\u8d25',
     longTermMemorySaved: '\u597d\u7684\uff0c\u6211\u4f1a\u8bb0\u5f97\u8fd9\u4ef6\u4e8b\u3002',
     userMemorySaved: '\u6211\u8bb0\u4f4f\u5566\u3002',
+    memoryAiUnavailable: '\u5f53\u524d\u65e0\u6cd5\u4f7f\u7528 AI \u5224\u65ad\u5e76\u4fdd\u5b58\u8bb0\u5fc6\uff0c\u8bf7\u68c0\u67e5 API \u8bbe\u7f6e\u540e\u518d\u8bd5\u3002',
     thinking: '\u6211\u60f3\u4e00\u4e0b...',
     emptyReply: '\u6211\u8fd8\u6ca1\u60f3\u597d\u600e\u4e48\u56de\u7b54\u5462\u3002',
     apiFailed: '\u8fde\u63a5 API \u5931\u8d25\u4e86\uff0c\u8bf7\u68c0\u67e5 Key \u6216\u7f51\u7edc\u3002',
@@ -203,6 +204,7 @@ const i18n = {
     clearFailedBubble: 'Clear failed',
     longTermMemorySaved: "Okay, I'll keep that in mind.",
     userMemorySaved: "I'll remember that.",
+    memoryAiUnavailable: 'AI memory analysis is unavailable. Check API settings and try again.',
     thinking: 'Let me think...',
     emptyReply: "I haven't found the right answer yet.",
     apiFailed: 'Failed to connect to the API. Check your Key or network.',
@@ -671,7 +673,9 @@ function renderMemoryList(type, memories) {
 
     const content = document.createElement('div');
     content.className = 'memory-item__content';
-    content.textContent = memory.content || t('empty');
+    content.textContent = type === 'shortTerm' && memory.topic
+      ? `[${memory.topic}] ${memory.content || t('empty')}`
+      : memory.content || t('empty');
 
     const edit = document.createElement('button');
     edit.className = 'memory-edit';
@@ -810,23 +814,32 @@ async function sendChatMessage(event) {
   clearRestoreTimers();
 
   try {
-    let memoryIntent = { matched: false };
+    let memoryAnalysis = { ok: true, remembered: false, action: 'skip' };
     try {
-      memoryIntent = await window.petAPI?.detectExplicitMemoryIntent?.(message) || { matched: false };
+      memoryAnalysis = await window.petAPI?.analyzeAndApplyMemory?.(message) || memoryAnalysis;
     } catch {
-      memoryIntent = { matched: false };
+      memoryAnalysis = {
+        ok: false,
+        remembered: false,
+        message: t('memoryAiUnavailable')
+      };
     }
 
-    if (memoryIntent.matched) {
+    if (memoryAnalysis.ok === false) {
       pushChat('user', message, { excludeFromAi: true });
-      await window.petAPI?.addMemory?.(memoryIntent.type, memoryIntent.content, {
-        source: 'user_explicit',
-        tags: memoryIntent.tags || [],
-        reminder: memoryIntent.reminder || undefined
-      });
-      const confirmation = memoryIntent.type === 'longTerm'
-        ? t('longTermMemorySaved')
-        : t('userMemorySaved');
+      const unavailable = memoryAnalysis.message || t('memoryAiUnavailable');
+      pushChat('assistant', unavailable, { excludeFromAi: true });
+      showBubble(unavailable, 8000);
+      setState('failed');
+      restoreTimers = [setTimeout(() => setState('idle'), 4500)];
+      return;
+    }
+
+    if (memoryAnalysis.remembered) {
+      pushChat('user', message, { excludeFromAi: true });
+      const confirmation = memoryAnalysis.message || (
+        memoryAnalysis.type === 'longTerm' ? t('longTermMemorySaved') : t('userMemorySaved')
+      );
       pushChat('assistant', confirmation, { excludeFromAi: true });
       showBubble(confirmation, 7000);
       setState('review');

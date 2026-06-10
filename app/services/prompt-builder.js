@@ -49,6 +49,9 @@ function getKeywords(text) {
   const asciiWords = value.match(/[a-z0-9_]{2,}/g) || [];
   const cjkText = value.replace(/[^\u4e00-\u9fff]/g, '');
   const cjkTokens = [];
+  for (let index = 0; index < cjkText.length; index += 1) {
+    cjkTokens.push(cjkText.slice(index, index + 1));
+  }
   for (let index = 0; index < cjkText.length - 1; index += 1) {
     cjkTokens.push(cjkText.slice(index, index + 2));
   }
@@ -58,7 +61,7 @@ function getKeywords(text) {
 function scoreMemory(userText, memory, type) {
   const content = cleanText(memory.content);
   const userKeywords = getKeywords(userText);
-  const memoryKeywords = getKeywords(`${content} ${(memory.tags || []).join(' ')}`);
+  const memoryKeywords = getKeywords(`${content} ${memory.topic || ''} ${(memory.tags || []).join(' ')}`);
   let score = type === 'user' ? 3 : 0;
 
   for (const keyword of userKeywords) {
@@ -73,7 +76,7 @@ function scoreMemory(userText, memory, type) {
 
 function hasKeywordOverlap(userText, memory) {
   const userKeywords = getKeywords(userText);
-  const memoryKeywords = getKeywords(memory.content);
+  const memoryKeywords = getKeywords(`${memory.content || ''} ${memory.topic || ''} ${(memory.tags || []).join(' ')}`);
   for (const keyword of userKeywords) {
     if (memoryKeywords.has(keyword)) return true;
   }
@@ -92,6 +95,7 @@ function takeRelevantMemories(userText, memories, type, maxCount, limits, requir
       type,
       id: item.memory.id || '',
       content: truncateText(item.memory.content, limits.singleMemoryMaxChars),
+      topic: item.memory.topic || '',
       tags: Array.isArray(item.memory.tags) ? item.memory.tags : []
     }));
 }

@@ -297,6 +297,472 @@ function detectAndApplyAffectionEvent(userText) {
   }
 }
 
+function getMemoryAnalysisUnavailableResult(reason = 'memory_ai_unavailable') {
+  return {
+    ok: false,
+    remembered: false,
+    action: 'skip',
+    type: '',
+    entry: null,
+    message: '\u5f53\u524d\u65e0\u6cd5\u4f7f\u7528 AI \u5224\u65ad\u5e76\u4fdd\u5b58\u8bb0\u5fc6\uff0c\u8bf7\u68c0\u67e5 API \u8bbe\u7f6e\u540e\u518d\u8bd5\u3002',
+    reason
+  };
+}
+
+function getMemoryAnalysisSkippedResult(reason = 'not_memory_worthy') {
+  return {
+    ok: true,
+    remembered: false,
+    action: 'skip',
+    type: '',
+    entry: null,
+    message: '',
+    reason
+  };
+}
+
+function summarizeMemoriesForAnalysis(memory = {}) {
+  const summarize = (type) => {
+    const bucket = Array.isArray(memory[type]) ? memory[type] : [];
+    return bucket.slice(-20).map((entry) => ({
+      id: String(entry.id || ''),
+      type,
+      content: String(entry.content || '').slice(0, 180),
+      topic: String(entry.topic || '').slice(0, 40),
+      tags: Array.isArray(entry.tags) ? entry.tags.slice(0, 8) : [],
+      importance: Number(entry.importance) || 1,
+      reminder: type === 'longTerm' && entry.reminder ? {
+        enabled: Boolean(entry.reminder.enabled),
+        frequency: String(entry.reminder.frequency || ''),
+        time: String(entry.reminder.time || ''),
+        note: String(entry.reminder.note || '').slice(0, 120)
+      } : undefined
+    }));
+  };
+
+  return {
+    user: summarize('user'),
+    longTerm: summarize('longTerm'),
+    shortTerm: summarize('shortTerm')
+  };
+}
+
+function summarizeActiveShortTermMemories(memory = {}) {
+  const bucket = Array.isArray(memory.shortTerm) ? memory.shortTerm : [];
+  const now = Date.now();
+  return bucket
+    .filter((entry) => {
+      if (!entry.expiresAt) return true;
+      const expiresAt = Date.parse(entry.expiresAt);
+      return Number.isNaN(expiresAt) || expiresAt > now;
+    })
+    .slice(-12)
+    .map((entry) => ({
+      id: String(entry.id || ''),
+      topic: String(entry.topic || '').slice(0, 40),
+      content: String(entry.content || '').slice(0, 500),
+      tags: Array.isArray(entry.tags) ? entry.tags.slice(0, 8) : [],
+      importance: Number(entry.importance) || 1,
+      expiresAt: String(entry.expiresAt || '')
+    }));
+}
+
+function extractJsonObject(textValue) {
+  const textContent = String(textValue || '').trim();
+  if (!textContent) {
+    throw new Error('AI memory response is empty.');
+  }
+  const fenced = textContent.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : textContent;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('AI memory response did not include JSON.');
+  }
+  return JSON.parse(candidate.slice(start, end + 1));
+}
+
+function buildShortTermAnalysisMessages(userText, activeShortTerm) {
+  const schema = {
+    shouldRemember: true,
+    action: 'create',
+    targetId: '',
+    topic: '\u5403\u836f',
+    content: '\u7528\u6237\u63d0\u5230\u4e00\u4ef6\u4e0e\u5403\u836f\u6709\u5173\u7684\u4e8b\u3002',
+    tags: ['\u5403\u836f'],
+    importance: 2,
+    reason: ''
+  };
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You curate short-term working memory for a desktop pet.',
+        'Short-term memory is grouped by topic segments. It keeps useful conversational facts for 24 hours.',
+        'Ignore only meaningless greetings, laughter, acknowledgements, and pure small talk.',
+        'For useful information, return exactly one JSON object and no markdown.',
+        'If the message belongs to an existing topic segment, use action "update" and targetId.',
+        'If it starts a new topic, use action "create".',
+        'Do not overwrite distinct facts inside the same topic; merge them into a detailed but readable segment summary.',
+        'Topic should be concise, such as "\u5403\u836f", "\u56fe\u4e66\u9986", "\u5b66\u4e60\u82f1\u8bed", or "\u5de5\u4f5c\u8ba1\u5212".',
+        'Content should preserve enough detail for later pronouns like "\u8fd9\u4e24\u4e2a", "\u521a\u624d\u90a3\u4e2a", and "\u4e0d\u662f\u540c\u4e00\u4e2a" to be resolved.',
+        'Example: if one segment already says the user needs medicine tonight and the new message says daily 9pm medicine, update the same topic segment to include both as separate medicine-related facts.',
+        `JSON schema example: ${JSON.stringify(schema)}`
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        userMessage: userText,
+        activeShortTerm
+      })
+    }
+  ];
+}
+
+function buildMemoryAnalysisMessages(userText, existingMemories) {
+  const schema = {
+    shouldRemember: false,
+    type: 'user',
+    action: 'skip',
+    targetId: '',
+    content: '',
+    tags: [],
+    importance: 1,
+    reminder: {
+      enabled: false,
+      frequency: '',
+      time: '',
+      note: ''
+    },
+    reason: ''
+  };
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are a memory curator for a desktop pet app.',
+        'Decide whether the user message contains durable, useful memory.',
+        'Return exactly one JSON object and no markdown.',
+        'Use type "user" for stable user profile, preferences, identity, birthday, habits, and dislikes.',
+        'Use type "longTerm" for goals, plans, recurring commitments, reminders, medication schedules, and future tasks.',
+        'Use action "update" with targetId when the new memory duplicates or conflicts with an existing memory.',
+        'Use action "skip" when the message is low value, temporary, unclear, or only small talk.',
+        'Write content as a clean natural Chinese sentence. Do not copy the raw message unless it is already optimal.',
+        'Tags must be short lowercase English or concise Chinese labels.',
+        'Importance must be an integer from 1 to 5.',
+        'For reminder memories, set reminder.enabled true and fill frequency, time, and note when available.',
+        'Use shortTerm context to resolve references such as "\u8fd9\u4e24\u4e2a", "\u521a\u624d", "\u4e0d\u662f\u540c\u4e00\u4e2a", and related follow-up corrections.',
+        'If the user clarifies that two remembered facts are different, preserve or create separate long-term memories rather than merging them.',
+        'You may return {"items":[...]} when more than one memory operation is needed, such as updating one memory and creating another.',
+        'Temporal precision is critical: never turn one-time wording into recurring wording.',
+        'If the user says today, tonight, this evening, this week, or a specific one-time date, use reminder.frequency "once".',
+        'Only use "daily" when the user explicitly says every day, daily, every morning, every night, or an equivalent recurring phrase.',
+        'Only use "weekly" or "monthly" when the user explicitly says every week or every month.',
+        'If wording is ambiguous, preserve uncertainty and choose "once" instead of inventing a routine.',
+        'Examples:',
+        '- User: "\u4eca\u5929\u665a\u4e0a\u8981\u5403\u836f" => content "\u7528\u6237\u4eca\u5929\u665a\u4e0a\u9700\u8981\u5403\u836f\u3002", type "longTerm", reminder.frequency "once", reminder.time "\u4eca\u5929\u665a\u4e0a".',
+        '- User: "\u6bcf\u5929\u665a\u4e0a9\u70b9\u63d0\u9192\u6211\u5403\u836f" => content "\u7528\u6237\u9700\u8981\u6bcf\u5929\u665a\u4e0a9\u70b9\u5403\u836f\u3002", type "longTerm", reminder.frequency "daily", reminder.time "\u665a\u4e0a9\u70b9".',
+        '- User: "\u6211\u559c\u6b22\u559d\u51b0\u7f8e\u5f0f" => type "user", content "\u7528\u6237\u559c\u6b22\u559d\u51b0\u7f8e\u5f0f\u3002", action "create".',
+        '- User: "\u8fd9\u4e24\u4e2a\u662f\u4e0d\u540c\u7684\u836f" with shortTerm showing tonight medicine and daily 9pm medicine => return items that keep two separate medication memories.',
+        `JSON schema example: ${JSON.stringify(schema)}`
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        userMessage: userText,
+        existingMemories
+      })
+    }
+  ];
+}
+
+function hasRecurringTimeIntent(textValue) {
+  return /(\u6bcf\u5929|\u6bcf\u65e5|\u6bcf\u665a|\u6bcf\u65e9|\u6bcf\u5468|\u6bcf\u661f\u671f|\u6bcf\u6708|\u957f\u671f|\u4ee5\u540e\u90fd|\u4ee5\u540e\u6bcf|\bdaily\b|\bevery day\b|\bweekly\b|\bmonthly\b)/iu.test(String(textValue || ''));
+}
+
+function hasOneTimeTimeIntent(textValue) {
+  return /(\u4eca\u5929|\u4eca\u665a|\u4eca\u5929\u665a\u4e0a|\u4eca\u591c|\u660e\u5929|\u660e\u665a|\u8fd9\u5468|\u672c\u5468|\u8fd9\u4e2a\u6708|\u672c\u6708|\btonight\b|\btoday\b|\btomorrow\b)/iu.test(String(textValue || ''));
+}
+
+function correctOneTimeReminderDecision(decision, userText) {
+  const next = decision && typeof decision === 'object' ? { ...decision } : {};
+  const reminder = next.reminder && typeof next.reminder === 'object' ? { ...next.reminder } : null;
+  const shouldCorrect = next.type === 'longTerm'
+    && reminder
+    && hasOneTimeTimeIntent(userText)
+    && !hasRecurringTimeIntent(userText);
+
+  if (!shouldCorrect) {
+    return next;
+  }
+
+  reminder.frequency = 'once';
+  if (!String(reminder.time || '').trim()) {
+    reminder.time = /\u4eca\u665a|\u4eca\u5929\u665a\u4e0a|\u4eca\u591c/u.test(userText)
+      ? '\u4eca\u5929\u665a\u4e0a'
+      : '\u4eca\u5929';
+  }
+  if (typeof reminder.note === 'string') {
+    reminder.note = reminder.note
+      .replace(/\u6bcf\u5929\u665a\u4e0a|\u6bcf\u665a/gu, '\u4eca\u5929\u665a\u4e0a')
+      .replace(/\u6bcf\u5929|\u6bcf\u65e5/gu, '\u4eca\u5929');
+  }
+  next.reminder = reminder;
+  if (typeof next.content === 'string') {
+    next.content = next.content
+      .replace(/\u6bcf\u5929\u665a\u4e0a|\u6bcf\u665a/gu, '\u4eca\u5929\u665a\u4e0a')
+      .replace(/\u6bcf\u5929|\u6bcf\u65e5/gu, '\u4eca\u5929');
+  }
+  next.reason = String(next.reason || '')
+    ? `${next.reason}; corrected one-time temporal wording`
+    : 'corrected one-time temporal wording';
+  return next;
+}
+
+async function callMemoryAnalysisApi(config, userText, existingMemories) {
+  const response = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: buildMemoryAnalysisMessages(userText, existingMemories),
+      temperature: 0,
+      max_tokens: 700,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Memory analysis API failed: ${response.status} ${detail.slice(0, 160)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  return extractJsonObject(content);
+}
+
+async function callShortTermAnalysisApi(config, userText, activeShortTerm) {
+  const response = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: buildShortTermAnalysisMessages(userText, activeShortTerm),
+      temperature: 0,
+      max_tokens: 650,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Short-term memory API failed: ${response.status} ${detail.slice(0, 160)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  return extractJsonObject(content);
+}
+
+function buildShortTermSedimentationMessages(segment, existingMemories) {
+  const schema = {
+    items: [
+      {
+        shouldRemember: true,
+        type: 'longTerm',
+        action: 'create',
+        targetId: '',
+        content: '\u7528\u6237\u67d0\u5929\u53bb\u4e86\u56fe\u4e66\u9986\u5e76\u9605\u8bfb\u4e86\u67d0\u672c\u4e66\u3002',
+        tags: ['\u56fe\u4e66\u9986', '\u4e66\u540d'],
+        importance: 2,
+        reminder: {
+          enabled: false,
+          frequency: '',
+          time: '',
+          note: ''
+        },
+        reason: ''
+      }
+    ]
+  };
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You condense expired short-term topic memory into durable long-term memory.',
+        'Return exactly one JSON object and no markdown.',
+        'Keep only durable, useful facts. Drop incidental details that are not useful later.',
+        'Preserve dates, places, books, goals, recurring tasks, preferences, and important outcomes.',
+        'Use concise Chinese natural sentences and clear tags.',
+        'If nothing is worth long-term storage, return {"items":[{"shouldRemember":false,"action":"skip"}]}.',
+        'Use action "update" with targetId when the condensed memory overlaps or conflicts with existing memory.',
+        `JSON schema example: ${JSON.stringify(schema)}`
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        shortTermSegment: segment,
+        existingMemories
+      })
+    }
+  ];
+}
+
+async function callSedimentationApi(config, segment, existingMemories) {
+  const response = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: buildShortTermSedimentationMessages(segment, existingMemories),
+      temperature: 0,
+      max_tokens: 720,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Short-term sedimentation API failed: ${response.status} ${detail.slice(0, 160)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  return extractJsonObject(content);
+}
+
+async function applyShortTermWorkingMemory(config, userText, petData) {
+  if (!memoryService.shouldAnalyzeShortTermMemory(userText)) {
+    return { remembered: false, reason: 'low_value_short_term' };
+  }
+
+  const activeShortTerm = summarizeActiveShortTermMemories(petData.memory);
+  const rawDecision = await callShortTermAnalysisApi(config, userText, activeShortTerm);
+  const normalizedDecision = memoryService.normalizeShortTermDecision(rawDecision, activeShortTerm);
+  return memoryService.applyShortTermMemory(app, normalizedDecision, userText);
+}
+
+async function settleExpiredShortTermMemories(config) {
+  const expired = memoryService.getExpiredShortTermMemories(app);
+  if (!expired.length) {
+    return { settled: 0, removed: 0 };
+  }
+
+  let settled = 0;
+  const removableIds = [];
+  for (const segment of expired.slice(0, 5)) {
+    const petData = loadPetData(app);
+    const existingMemories = summarizeMemoriesForAnalysis(petData.memory);
+    const rawDecision = await callSedimentationApi(config, {
+      id: segment.id,
+      topic: segment.topic || '',
+      content: segment.content || '',
+      tags: Array.isArray(segment.tags) ? segment.tags : [],
+      createdAt: segment.createdAt || '',
+      updatedAt: segment.updatedAt || '',
+      sourceMessage: segment.sourceMessage || ''
+    }, existingMemories);
+    const normalizedDecisions = memoryService.normalizeAiMemoryDecisions(rawDecision, existingMemories);
+    const applied = memoryService.applyAnalyzedMemories(app, normalizedDecisions);
+    settled += applied.length;
+    removableIds.push(segment.id);
+  }
+
+  const removed = memoryService.deleteShortTermMemoriesByIds(app, removableIds).removed;
+  return { settled, removed };
+}
+
+async function analyzeAndApplyMemory(textValue) {
+  const rawUserText = String(textValue || '').trim();
+  const userText = trimTextByChars(rawUserText, getDefaultTokenBudget().userInputMaxChars);
+  const shouldAnalyzeShortTerm = memoryService.shouldAnalyzeShortTermMemory(userText);
+  const shouldAnalyzeLongTerm = memoryService.shouldAnalyzeMemory(userText);
+
+  if (!userText || (!shouldAnalyzeShortTerm && !shouldAnalyzeLongTerm)) {
+    return getMemoryAnalysisSkippedResult('memory_keyword_not_matched');
+  }
+
+  const config = readApiConfig({ includeSecret: true });
+  if (!config.apiKey) {
+    return shouldAnalyzeLongTerm
+      ? getMemoryAnalysisUnavailableResult('missing_api_key')
+      : getMemoryAnalysisSkippedResult('short_term_ai_unavailable');
+  }
+
+  try {
+    await settleExpiredShortTermMemories(config).catch((error) => {
+      console.warn('Short-term memory sedimentation failed.', error?.message || error);
+    });
+
+    let petData = loadPetData(app);
+    if (shouldAnalyzeShortTerm) {
+      await applyShortTermWorkingMemory(config, userText, petData).catch((error) => {
+        console.warn('Short-term working memory update failed.', error?.message || error);
+      });
+      petData = loadPetData(app);
+    }
+
+    if (!shouldAnalyzeLongTerm) {
+      return getMemoryAnalysisSkippedResult('long_term_keyword_not_matched');
+    }
+
+    const existingMemories = summarizeMemoriesForAnalysis(petData.memory);
+    const rawDecision = await callMemoryAnalysisApi(config, userText, existingMemories);
+    const rawItems = rawDecision && typeof rawDecision === 'object' && Array.isArray(rawDecision.items)
+      ? rawDecision.items
+      : [rawDecision];
+    const correctedDecision = { items: rawItems.map((item) => correctOneTimeReminderDecision(item, userText)) };
+    const normalizedDecisions = memoryService.normalizeAiMemoryDecisions(correctedDecision, existingMemories);
+    const applied = memoryService.applyAnalyzedMemories(app, normalizedDecisions);
+
+    if (!applied.length) {
+      const reason = normalizedDecisions.find((item) => item.reason)?.reason || 'ai_skipped_memory';
+      return getMemoryAnalysisSkippedResult(reason);
+    }
+
+    const first = applied[0];
+    return {
+      ok: true,
+      remembered: true,
+      action: applied.length > 1 ? 'multiple' : first.action,
+      type: applied.length > 1 ? 'mixed' : first.type,
+      entry: first.entry,
+      entries: applied.map((item) => ({
+        action: item.action,
+        type: item.type,
+        entry: item.entry
+      })),
+      message: applied.length > 1
+        ? '\u6211\u5df2\u6309\u4e0a\u4e0b\u6587\u6574\u7406\u5e76\u4fdd\u5b58\u4e86\u591a\u6761\u8bb0\u5fc6\u3002'
+        : first.action === 'update'
+          ? '\u6211\u5df2\u66f4\u65b0\u8fd9\u6761\u8bb0\u5fc6\u3002'
+          : '\u597d\u7684\uff0c\u6211\u5df2\u7ecf\u6309\u89c4\u8303\u5e2e\u4f60\u8bb0\u4e0b\u6765\u4e86\u3002',
+      reason: normalizedDecisions.map((item) => item.reason).filter(Boolean).join('; ')
+    };
+  } catch (error) {
+    console.warn('AI memory analysis failed.', error?.message || error);
+    return shouldAnalyzeLongTerm
+      ? getMemoryAnalysisUnavailableResult('memory_ai_failed')
+      : getMemoryAnalysisSkippedResult('short_term_ai_failed');
+  }
+}
+
 async function sendChatMessage(payload = {}) {
   const config = readApiConfig({ includeSecret: true });
   const tokenBudget = getDefaultTokenBudget();
@@ -562,6 +1028,10 @@ ipcMain.handle('memory:clear-all', () => memoryService.clearAllMemories(app));
 
 ipcMain.handle('memory:detect-explicit-intent', (_event, textValue) => (
   memoryService.detectExplicitMemoryIntent(String(textValue || ''))
+));
+
+ipcMain.handle('memory:analyze-and-apply', (_event, textValue) => (
+  analyzeAndApplyMemory(String(textValue || ''))
 ));
 
 ipcMain.handle('affection:get', () => affectionService.getAffectionState(app));

@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('petAPI', {
   clearMemories: (type) => ipcRenderer.invoke('memory:clear-type', type),
   clearAllMemories: () => ipcRenderer.invoke('memory:clear-all'),
   detectExplicitMemoryIntent: (text) => ipcRenderer.invoke('memory:detect-explicit-intent', text),
+  analyzeAndApplyMemory: (text) => ipcRenderer.invoke('memory:analyze-and-apply', text),
   getAffection: () => ipcRenderer.invoke('affection:get'),
   setAffectionScore: (score, reason) => ipcRenderer.invoke('affection:set-score', score, reason),
   adjustAffection: (delta, eventType, reason, options) => (

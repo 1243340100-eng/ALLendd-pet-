@@ -1,15 +1,15 @@
 const DEFAULT_TOKEN_BUDGET = {
-  systemPromptMaxChars: 3500,
-  memoryTotalMaxChars: 600,
-  singleMemoryMaxChars: 120,
+  systemPromptMaxChars: 4200,
+  memoryTotalMaxChars: 1500,
+  singleMemoryMaxChars: 180,
   historyMaxMessages: 10,
   singleHistoryMessageMaxChars: 600,
   userInputMaxChars: 1000,
   responseMaxTokens: 220,
-  memoryMaxItems: 5,
-  userMemoryMaxItems: 3,
-  longTermMemoryMaxItems: 2,
-  shortTermMemoryMaxItems: 1
+  memoryMaxItems: 9,
+  userMemoryMaxItems: 4,
+  longTermMemoryMaxItems: 4,
+  shortTermMemoryMaxItems: 3
 };
 
 function getDefaultTokenBudget() {

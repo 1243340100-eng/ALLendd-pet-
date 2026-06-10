@@ -4,16 +4,21 @@ const { loadPetData, updatePetData } = require('./pet-data-store');
 const VALID_TYPES = new Set(['user', 'longTerm', 'shortTerm']);
 const VALID_SOURCES = new Set(['user_explicit', 'inferred', 'system']);
 const MAX_EDIT_CONTENT_CHARS = 300;
+const SHORT_TERM_TTL_HOURS = 24;
+const SHORT_TERM_TTL_MS = SHORT_TERM_TTL_HOURS * 60 * 60 * 1000;
 const LOW_VALUE_CONTENT = new Set([
-  '哈哈',
-  '哈哈哈',
-  '嗯',
-  '好的',
-  '好',
+  '\u54c8\u54c8',
+  '\u54c8\u54c8\u54c8',
+  '\u55ef',
+  '\u597d\u7684',
+  '\u597d',
   'ok',
   'OK',
-  '天气不错'
+  '\u5929\u6c14\u4e0d\u9519'
 ]);
+
+const MEMORY_TRIGGER_PATTERN = /(\u8bb0\u4f4f|\u5e2e\u6211\u8bb0\u4f4f|\u8bf7\u8bb0\u4f4f|\u4e0d\u8981\u5fd8\u8bb0|\u63d0\u9192\u6211|\u4ee5\u540e|\u6bcf\u5929|\u6bcf\u65e5|\u6bcf\u5468|\u6bcf\u661f\u671f|\u6bcf\u6708|\u6211\u559c\u6b22|\u6211\u4e0d\u559c\u6b22|\u6211\u53eb|\u6211\u7684\u540d\u5b57|\u751f\u65e5|\u6211\u662f|\u4e60\u60ef|\u76ee\u6807|\u8ba1\u5212|\u504f\u597d|\u91cd\u8981|\u5403\u836f|\u7528\u836f|\u670d\u836f|\u590d\u67e5|\u836f|\u4e0d\u540c|\u8fd9\u4e24\u4e2a|\u521a\u624d|\u524d\u9762|\u4e0a\u9762|\u5b83\u4eec|\u4e0d\u662f\u540c\u4e00\u4e2a)/u;
+const VALID_ANALYSIS_ACTIONS = new Set(['create', 'update', 'skip']);
 
 function nowIso() {
   return new Date().toISOString();
@@ -62,7 +67,10 @@ function createMemoryEntry(type, content, options = {}) {
   }
 
   if (type === 'shortTerm') {
-    entry.expiresAt = cleanText(options.expiresAt);
+    const expiresAt = cleanText(options.expiresAt);
+    entry.topic = cleanText(options.topic).slice(0, 40);
+    entry.sourceMessage = cleanText(options.sourceMessage).slice(0, 300);
+    entry.expiresAt = expiresAt || new Date(Date.now() + SHORT_TERM_TTL_MS).toISOString();
   }
 
   return entry;
@@ -149,6 +157,12 @@ function updateMemory(appInstance, type, id, patch = {}) {
     if (type === 'shortTerm' && typeof patch.expiresAt === 'string') {
       next.expiresAt = cleanText(patch.expiresAt);
     }
+    if (type === 'shortTerm' && typeof patch.topic === 'string') {
+      next.topic = cleanText(patch.topic).slice(0, 40);
+    }
+    if (type === 'shortTerm' && typeof patch.sourceMessage === 'string') {
+      next.sourceMessage = cleanText(patch.sourceMessage).slice(0, 300);
+    }
 
     bucket[index] = next;
     updated = next;
@@ -217,119 +231,241 @@ function clearAllMemories(appInstance) {
   return { removed };
 }
 
-function makeMatch(type, content, tags = [], reminder = null) {
-  const cleaned = cleanText(content);
-  if (isLowValueContent(cleaned)) {
-    return { matched: false };
+function shouldAnalyzeMemory(text) {
+  const value = cleanText(text);
+  return Boolean(value && MEMORY_TRIGGER_PATTERN.test(value));
+}
+
+function shouldAnalyzeShortTermMemory(text) {
+  return !isLowValueContent(text);
+}
+
+function normalizeTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  return tags
+    .map(cleanText)
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function normalizeReminder(reminder) {
+  if (!reminder || typeof reminder !== 'object') {
+    return null;
   }
   return {
-    matched: true,
-    type,
-    content: cleaned,
-    tags,
-    reminder
+    enabled: Boolean(reminder.enabled),
+    frequency: cleanText(reminder.frequency),
+    time: cleanText(reminder.time),
+    note: cleanText(reminder.note)
   };
 }
 
-function detectReminderFrequency(text) {
-  if (/每天|每日/u.test(text)) return 'daily';
-  if (/每周|每星期/u.test(text)) return 'weekly';
-  if (/每月/u.test(text)) return 'monthly';
-  if (/以后/u.test(text)) return 'recurring';
-  return 'once';
+function clampImportance(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.max(1, Math.min(5, Math.round(numeric)));
 }
 
-function detectReminderTime(text) {
-  const value = cleanText(text);
-  const match = value.match(/(?:早上|上午|中午|下午|晚上|夜里|睡前)?\s*(?:[0-2]?\d|[一二三四五六七八九十两]{1,3})\s*(?:点|:|：)\s*(?:[0-5]?\d\s*分?)?/u);
-  if (match) return cleanText(match[0]);
-  if (/睡前/u.test(value)) return '睡前';
-  if (/饭后/u.test(value)) return '饭后';
-  if (/饭前/u.test(value)) return '饭前';
-  return '';
+function normalizeAiMemoryDecision(rawDecision, existingMemories = {}) {
+  const decision = rawDecision && typeof rawDecision === 'object' ? rawDecision : {};
+  const shouldRemember = Boolean(decision.shouldRemember);
+  const action = VALID_ANALYSIS_ACTIONS.has(decision.action) ? decision.action : 'skip';
+  const type = decision.type === 'longTerm' ? 'longTerm' : 'user';
+  const content = cleanText(decision.content).slice(0, 300);
+  const targetId = cleanText(decision.targetId);
+  const tags = normalizeTags(decision.tags);
+  const reminder = type === 'longTerm' ? normalizeReminder(decision.reminder) : null;
+  const reason = cleanText(decision.reason).slice(0, 200);
+
+  if (!shouldRemember || action === 'skip') {
+    return {
+      shouldRemember: false,
+      action: 'skip',
+      type,
+      targetId: '',
+      content: '',
+      tags: [],
+      importance: 1,
+      reminder: null,
+      reason
+    };
+  }
+
+  if (isLowValueContent(content)) {
+    throw new Error('AI memory content is empty or low value.');
+  }
+
+  if (action === 'update') {
+    const bucket = Array.isArray(existingMemories[type]) ? existingMemories[type] : [];
+    if (!targetId || !bucket.some((entry) => entry.id === targetId)) {
+      throw new Error('AI memory update target is invalid.');
+    }
+  }
+
+  return {
+    shouldRemember: true,
+    action,
+    type,
+    targetId,
+    content,
+    tags,
+    importance: clampImportance(decision.importance),
+    reminder,
+    reason
+  };
 }
 
-function makeReminderMatch(content, tags = ['reminder']) {
-  const cleaned = cleanText(content);
-  return makeMatch('longTerm', cleaned, tags, {
-    enabled: true,
-    frequency: detectReminderFrequency(cleaned),
-    time: detectReminderTime(cleaned),
-    note: cleaned
+function normalizeAiMemoryDecisions(rawDecision, existingMemories = {}) {
+  const source = rawDecision && typeof rawDecision === 'object' && Array.isArray(rawDecision.items)
+    ? rawDecision.items
+    : [rawDecision];
+  return source.map((item) => normalizeAiMemoryDecision(item, existingMemories));
+}
+
+function normalizeShortTermDecision(rawDecision, existingShortTerm = []) {
+  const decision = rawDecision && typeof rawDecision === 'object' ? rawDecision : {};
+  const shouldRemember = Boolean(decision.shouldRemember);
+  const action = VALID_ANALYSIS_ACTIONS.has(decision.action) ? decision.action : 'skip';
+  const topic = cleanText(decision.topic).slice(0, 40);
+  const content = cleanText(decision.content).slice(0, 700);
+  const targetId = cleanText(decision.targetId);
+  const tags = normalizeTags(decision.tags);
+  const reason = cleanText(decision.reason).slice(0, 200);
+
+  if (!shouldRemember || action === 'skip') {
+    return {
+      shouldRemember: false,
+      action: 'skip',
+      targetId: '',
+      topic: '',
+      content: '',
+      tags: [],
+      importance: 1,
+      reason
+    };
+  }
+
+  if (isLowValueContent(content) || !topic) {
+    throw new Error('AI short-term memory content or topic is invalid.');
+  }
+
+  if (action === 'update') {
+    if (!targetId || !existingShortTerm.some((entry) => entry.id === targetId)) {
+      throw new Error('AI short-term update target is invalid.');
+    }
+  }
+
+  return {
+    shouldRemember: true,
+    action,
+    targetId,
+    topic,
+    content,
+    tags,
+    importance: clampImportance(decision.importance),
+    reason
+  };
+}
+
+function applyShortTermMemory(appInstance, normalizedDecision, sourceMessage = '') {
+  if (!normalizedDecision?.shouldRemember || normalizedDecision.action === 'skip') {
+    return { remembered: false, action: 'skip', entry: null };
+  }
+
+  const expiresAt = new Date(Date.now() + SHORT_TERM_TTL_MS).toISOString();
+  const patch = {
+    content: normalizedDecision.content,
+    source: 'inferred',
+    tags: normalizedDecision.tags,
+    importance: normalizedDecision.importance,
+    topic: normalizedDecision.topic,
+    sourceMessage,
+    expiresAt
+  };
+
+  if (normalizedDecision.action === 'update') {
+    const entry = updateMemory(appInstance, 'shortTerm', normalizedDecision.targetId, patch);
+    return { remembered: true, action: 'update', entry };
+  }
+
+  const entry = addMemory(appInstance, 'shortTerm', normalizedDecision.content, patch);
+  return { remembered: true, action: 'create', entry };
+}
+
+function applyAnalyzedMemory(appInstance, normalizedDecision) {
+  if (!normalizedDecision?.shouldRemember || normalizedDecision.action === 'skip') {
+    return { remembered: false, action: 'skip', type: normalizedDecision?.type || 'user', entry: null };
+  }
+
+  const options = {
+    source: 'user_explicit',
+    tags: normalizedDecision.tags,
+    importance: normalizedDecision.importance,
+    reminder: normalizedDecision.reminder || undefined
+  };
+
+  if (normalizedDecision.action === 'update') {
+    const entry = updateMemory(
+      appInstance,
+      normalizedDecision.type,
+      normalizedDecision.targetId,
+      {
+        content: normalizedDecision.content,
+        source: options.source,
+        tags: options.tags,
+        importance: options.importance,
+        reminder: options.reminder
+      }
+    );
+    return { remembered: true, action: 'update', type: normalizedDecision.type, entry };
+  }
+
+  const entry = addMemory(appInstance, normalizedDecision.type, normalizedDecision.content, options);
+  return { remembered: true, action: 'create', type: normalizedDecision.type, entry };
+}
+
+function applyAnalyzedMemories(appInstance, normalizedDecisions) {
+  const applied = [];
+  for (const decision of normalizedDecisions) {
+    const result = applyAnalyzedMemory(appInstance, decision);
+    if (result.remembered) {
+      applied.push(result);
+    }
+  }
+  return applied;
+}
+
+function getExpiredShortTermMemories(appInstance) {
+  const now = Date.now();
+  const data = loadPetData(appInstance);
+  const bucket = getMemoryBucket(data, 'shortTerm');
+  return bucket.filter((entry) => {
+    if (!entry.expiresAt) return false;
+    const expiresAt = Date.parse(entry.expiresAt);
+    return !Number.isNaN(expiresAt) && expiresAt <= now;
   });
 }
 
+function deleteShortTermMemoriesByIds(appInstance, ids = []) {
+  const idSet = new Set(ids.map(cleanText).filter(Boolean));
+  if (!idSet.size) return { removed: 0 };
+
+  let removed = 0;
+  updatePetData(appInstance, (data) => {
+    const bucket = getMemoryBucket(data, 'shortTerm');
+    const active = bucket.filter((entry) => !idSet.has(entry.id));
+    removed = bucket.length - active.length;
+    data.memory.shortTerm = active;
+    return data;
+  });
+  return { removed };
+}
+
 function detectExplicitMemoryIntent(text) {
-  const value = cleanText(text);
-  if (!value) return { matched: false };
-
-  const medicationKeywords = /(吃药|用药|服药|药|复查)/u;
-  const reminderIntent = /(提醒我|记住|帮我记住|以后|每天|每日|每周|每星期|时间是|要吃药|要用药|要服药)/u;
-  if (medicationKeywords.test(value) && reminderIntent.test(value)) {
-    return makeReminderMatch(value, ['reminder', 'medication']);
-  }
-
-  const genericReminderPatterns = [
-    /^(?:请你)?(?:以后)?(?:每天|每日|每周|每星期|每月)?.*提醒我(.+)/u,
-    /^提醒我(.+)/u,
-    /^(.+?)提醒我(.+)/u
-  ];
-
-  for (const pattern of genericReminderPatterns) {
-    if (pattern.test(value)) {
-      return makeReminderMatch(value, ['reminder']);
-    }
-  }
-
-  const userPatterns = [
-    { pattern: /(?:请你)?记住我叫(.+)/u, tag: 'name', format: (match) => `我叫${cleanText(match[1])}` },
-    { pattern: /我的名字是(.+)/u, tag: 'name', format: (match) => `我的名字是${cleanText(match[1])}` },
-    { pattern: /以后叫我(.+)/u, tag: 'preferredName', format: (match) => `以后叫我${cleanText(match[1])}` },
-    { pattern: /我喜欢(.+)/u, tag: 'preference', format: (match) => `我喜欢${cleanText(match[1])}` },
-    { pattern: /我不喜欢(.+)/u, tag: 'preference', format: (match) => `我不喜欢${cleanText(match[1])}` },
-    { pattern: /我的生日是(.+)/u, tag: 'birthday', format: (match) => `我的生日是${cleanText(match[1])}` },
-    { pattern: /我是(.+)/u, tag: 'profile', format: (match) => `我是${cleanText(match[1])}` }
-  ];
-
-  for (const rule of userPatterns) {
-    const match = value.match(rule.pattern);
-    if (match) {
-      return makeMatch('user', rule.format(match), [rule.tag], null);
-    }
-  }
-
-  const reminderRules = [
-    { pattern: /(?:请你)?以后提醒我(.+)/u, frequency: 'once' },
-    { pattern: /(?:请你)?每天提醒我(.+)/u, frequency: 'daily' },
-    { pattern: /(?:请你)?每周提醒我(.+)/u, frequency: 'weekly' }
-  ];
-
-  for (const rule of reminderRules) {
-    const match = value.match(rule.pattern);
-    if (match) {
-      const note = cleanText(match[1]);
-      return makeMatch('longTerm', note, ['reminder'], {
-        enabled: true,
-        frequency: rule.frequency,
-        time: '',
-        note
-      });
-    }
-  }
-
-  const longTermPatterns = [
-    { pattern: /(?:请你)?记住这件事(.+)/u, tag: 'longTerm' },
-    { pattern: /(?:请你)?帮我记住(.+)/u, tag: 'longTerm' }
-  ];
-
-  for (const rule of longTermPatterns) {
-    const match = value.match(rule.pattern);
-    if (match) {
-      return makeMatch('longTerm', match[1], [rule.tag], null);
-    }
-  }
-
-  return { matched: false };
+  return {
+    matched: false,
+    shouldAnalyze: shouldAnalyzeMemory(text)
+  };
 }
 
 module.exports = {
@@ -340,5 +476,15 @@ module.exports = {
   clearMemories,
   clearAllMemories,
   clearExpiredShortTermMemories,
-  detectExplicitMemoryIntent
+  detectExplicitMemoryIntent,
+  shouldAnalyzeMemory,
+  shouldAnalyzeShortTermMemory,
+  normalizeAiMemoryDecision,
+  normalizeAiMemoryDecisions,
+  normalizeShortTermDecision,
+  applyShortTermMemory,
+  applyAnalyzedMemory,
+  applyAnalyzedMemories,
+  getExpiredShortTermMemories,
+  deleteShortTermMemoriesByIds
 };

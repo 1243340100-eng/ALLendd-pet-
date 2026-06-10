@@ -1,6 +1,6 @@
 {
   "name": "electron-pet-framework",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "A reusable Electron desktop pet framework with AI chat, memory, reminders, and placeholder test mode.",
   "main": "app/main.js",
   "author": "Codex",

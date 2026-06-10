@@ -61,9 +61,11 @@ function getKeywords(text) {
 function scoreMemory(userText, memory, type) {
   const content = cleanText(memory.content);
   const userKeywords = getKeywords(userText);
-  const memoryKeywords = getKeywords(`${content} ${memory.topic || ''} ${(memory.tags || []).join(' ')}`);
+  const memoryKeywords = getKeywords(getMemorySearchText(memory));
   let score = type === 'user' ? 3 : 0;
 
+  if (memory.pinned) score += 6;
+  if (type === 'user' && isCoreUserMemory(memory)) score += 4;
   for (const keyword of userKeywords) {
     if (memoryKeywords.has(keyword)) score += 2;
   }
@@ -74,13 +76,46 @@ function scoreMemory(userText, memory, type) {
   return score;
 }
 
+function getMemorySearchText(memory) {
+  return [
+    memory?.content || '',
+    memory?.topic || '',
+    memory?.category || '',
+    memory?.key || '',
+    memory?.value || '',
+    ...(Array.isArray(memory?.tags) ? memory.tags : [])
+  ].join(' ');
+}
+
 function hasKeywordOverlap(userText, memory) {
   const userKeywords = getKeywords(userText);
-  const memoryKeywords = getKeywords(`${memory.content || ''} ${memory.topic || ''} ${(memory.tags || []).join(' ')}`);
+  const memoryKeywords = getKeywords(getMemorySearchText(memory));
   for (const keyword of userKeywords) {
     if (memoryKeywords.has(keyword)) return true;
   }
   return false;
+}
+
+function isCoreUserMemory(memory) {
+  if (!memory || typeof memory !== 'object') return false;
+  if (memory.pinned) return true;
+  if (memory.category === 'profile_summary') return true;
+  if (memory.category === 'boundary') return true;
+  return memory.category === 'identity' && ['name', 'preferred_name'].includes(memory.key);
+}
+
+function mapMemoryForPrompt(memory, type, limits) {
+  return {
+    type,
+    id: memory.id || '',
+    content: truncateText(memory.content, limits.singleMemoryMaxChars),
+    topic: memory.topic || '',
+    category: memory.category || '',
+    key: memory.key || '',
+    value: memory.value || '',
+    pinned: Boolean(memory.pinned),
+    tags: Array.isArray(memory.tags) ? memory.tags : []
+  };
 }
 
 function takeRelevantMemories(userText, memories, type, maxCount, limits, requireRelevance = false) {
@@ -91,19 +126,29 @@ function takeRelevantMemories(userText, memories, type, maxCount, limits, requir
     .filter((item) => !requireRelevance || hasKeywordOverlap(userText, item.memory))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxCount)
-    .map((item) => ({
-      type,
-      id: item.memory.id || '',
-      content: truncateText(item.memory.content, limits.singleMemoryMaxChars),
-      topic: item.memory.topic || '',
-      tags: Array.isArray(item.memory.tags) ? item.memory.tags : []
-    }));
+    .map((item) => mapMemoryForPrompt(item.memory, type, limits));
 }
 
 function selectRelevantMemories(userText, memories = {}, limits = {}) {
   const nextLimits = { ...getDefaultTokenBudget(), ...limits };
+  const userBucket = Array.isArray(memories.user) ? memories.user : [];
+  const coreUserMemories = userBucket
+    .filter((memory) => !isLowValueMemory(memory) && isCoreUserMemory(memory))
+    .map((memory) => ({ memory, score: scoreMemory(userText, memory, 'user') }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.min(2, nextLimits.userMemoryMaxItems))
+    .map((item) => mapMemoryForPrompt(item.memory, 'user', nextLimits));
+  const coreIds = new Set(coreUserMemories.map((memory) => memory.id).filter(Boolean));
   const selected = [
-    ...takeRelevantMemories(userText, memories, 'user', nextLimits.userMemoryMaxItems, nextLimits, false),
+    ...coreUserMemories,
+    ...takeRelevantMemories(
+      userText,
+      { ...memories, user: userBucket.filter((memory) => !coreIds.has(memory.id)) },
+      'user',
+      Math.max(0, nextLimits.userMemoryMaxItems - coreUserMemories.length),
+      nextLimits,
+      true
+    ),
     ...takeRelevantMemories(userText, memories, 'longTerm', nextLimits.longTermMemoryMaxItems, nextLimits, true),
     ...takeRelevantMemories(userText, memories, 'shortTerm', nextLimits.shortTermMemoryMaxItems, nextLimits, true)
   ];

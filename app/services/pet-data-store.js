@@ -104,6 +104,17 @@ function normalizeMemoryEntry(entry = {}, type = 'user') {
     normalized.expiresAt = typeof entry.expiresAt === 'string' ? entry.expiresAt : '';
     normalized.topic = typeof entry.topic === 'string' ? entry.topic : '';
     normalized.sourceMessage = typeof entry.sourceMessage === 'string' ? entry.sourceMessage : '';
+    normalized.profileCandidate = Boolean(entry.profileCandidate);
+    normalized.profileReason = typeof entry.profileReason === 'string' ? entry.profileReason : '';
+  }
+
+  if (type === 'user') {
+    normalized.category = typeof entry.category === 'string' ? entry.category : '';
+    normalized.key = typeof entry.key === 'string' ? entry.key : '';
+    normalized.value = typeof entry.value === 'string' ? entry.value : '';
+    normalized.confidence = Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : 1;
+    normalized.pinned = Boolean(entry.pinned);
+    normalized.sourceMessage = typeof entry.sourceMessage === 'string' ? entry.sourceMessage : '';
   }
 
   return normalized;
@@ -154,6 +165,9 @@ function normalizePetData(input = {}) {
     prompt: {
       ...fallback.prompt,
       ...prompt,
+      profileSummaryLastUpdatedAt: typeof prompt.profileSummaryLastUpdatedAt === 'string'
+        ? prompt.profileSummaryLastUpdatedAt
+        : '',
       lastPromptStats: {
         ...fallback.prompt.lastPromptStats,
         ...(prompt.lastPromptStats && typeof prompt.lastPromptStats === 'object' ? prompt.lastPromptStats : {})

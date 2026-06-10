@@ -32,6 +32,7 @@ const defaultApiConfig = {
   model: 'deepseek-chat',
   apiKey: ''
 };
+const profileSummaryIntervalMs = 3 * 24 * 60 * 60 * 1000;
 
 const text = {
   hydrateNow: '\u7acb\u5373\u63d0\u9192\u660c\u660c\u559d\u6c34',
@@ -350,6 +351,14 @@ function summarizeMemoriesForAnalysis(memory = {}) {
       type,
       content: String(entry.content || '').slice(0, 180),
       topic: String(entry.topic || '').slice(0, 40),
+      category: String(entry.category || '').slice(0, 40),
+      key: String(entry.key || '').slice(0, 60),
+      value: String(entry.value || '').slice(0, 180),
+      confidence: Number(entry.confidence) || 1,
+      pinned: Boolean(entry.pinned),
+      sourceMessage: String(entry.sourceMessage || '').slice(0, 120),
+      profileCandidate: Boolean(entry.profileCandidate),
+      profileReason: String(entry.profileReason || '').slice(0, 120),
       tags: Array.isArray(entry.tags) ? entry.tags.slice(0, 8) : [],
       importance: Number(entry.importance) || 1,
       reminder: type === 'longTerm' && entry.reminder ? {
@@ -384,6 +393,8 @@ function summarizeActiveShortTermMemories(memory = {}) {
       content: String(entry.content || '').slice(0, 500),
       tags: Array.isArray(entry.tags) ? entry.tags.slice(0, 8) : [],
       importance: Number(entry.importance) || 1,
+      profileCandidate: Boolean(entry.profileCandidate),
+      profileReason: String(entry.profileReason || '').slice(0, 120),
       expiresAt: String(entry.expiresAt || '')
     }));
 }
@@ -412,6 +423,8 @@ function buildShortTermAnalysisMessages(userText, activeShortTerm) {
     content: '\u7528\u6237\u63d0\u5230\u4e00\u4ef6\u4e0e\u5403\u836f\u6709\u5173\u7684\u4e8b\u3002',
     tags: ['\u5403\u836f'],
     importance: 2,
+    profileCandidate: false,
+    profileReason: '',
     reason: ''
   };
 
@@ -428,6 +441,8 @@ function buildShortTermAnalysisMessages(userText, activeShortTerm) {
         'Do not overwrite distinct facts inside the same topic; merge them into a detailed but readable segment summary.',
         'Topic should be concise, such as "\u5403\u836f", "\u56fe\u4e66\u9986", "\u5b66\u4e60\u82f1\u8bed", or "\u5de5\u4f5c\u8ba1\u5212".',
         'Content should preserve enough detail for later pronouns like "\u8fd9\u4e24\u4e2a", "\u521a\u624d\u90a3\u4e2a", and "\u4e0d\u662f\u540c\u4e00\u4e2a" to be resolved.',
+        'Set profileCandidate true only when the message may reveal stable user profile, preference, dislike, identity, birthday, occupation, habit, boundary, or important health self-description.',
+        'Do not set profileCandidate true for ordinary reminders, one-time tasks, greetings, or pure scheduling unless they reveal a stable user trait.',
         'Example: if one segment already says the user needs medicine tonight and the new message says daily 9pm medicine, update the same topic segment to include both as separate medicine-related facts.',
         `JSON schema example: ${JSON.stringify(schema)}`
       ].join('\n')
@@ -467,8 +482,9 @@ function buildMemoryAnalysisMessages(userText, existingMemories) {
         'You are a memory curator for a desktop pet app.',
         'Decide whether the user message contains durable, useful memory.',
         'Return exactly one JSON object and no markdown.',
-        'Use type "user" for stable user profile, preferences, identity, birthday, habits, and dislikes.',
+        'Do not write stable user profile, preferences, identity, birthday, habits, or dislikes here; those are handled by a separate user-profile memory curator.',
         'Use type "longTerm" for goals, plans, recurring commitments, reminders, medication schedules, and future tasks.',
+        'Use type "longTerm" or action "skip" only.',
         'Use action "update" with targetId when the new memory duplicates or conflicts with an existing memory.',
         'Use action "skip" when the message is low value, temporary, unclear, or only small talk.',
         'Write content as a clean natural Chinese sentence. Do not copy the raw message unless it is already optimal.',
@@ -496,6 +512,103 @@ function buildMemoryAnalysisMessages(userText, existingMemories) {
       content: JSON.stringify({
         userMessage: userText,
         existingMemories
+      })
+    }
+  ];
+}
+
+function buildUserProfileAnalysisMessages(userText, existingMemories, profileReason = '') {
+  const schema = {
+    shouldRemember: true,
+    type: 'user',
+    action: 'create',
+    targetId: '',
+    content: '\u7528\u6237\u559c\u6b22\u559d\u51b0\u7f8e\u5f0f\u3002',
+    category: 'preference',
+    key: 'coffee',
+    value: '\u559c\u6b22\u51b0\u7f8e\u5f0f',
+    confidence: 4,
+    pinned: false,
+    tags: ['\u504f\u597d', '\u5496\u5561'],
+    importance: 3,
+    sourceMessage: '',
+    reason: ''
+  };
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You curate structured user-profile memory for a desktop pet.',
+        'Return exactly one JSON object and no markdown.',
+        'Only remember stable or semi-stable user information: identity, preferred name, birthday, occupation, preferences, dislikes, habits, boundaries, relationships, and important health self-descriptions.',
+        'Do not store temporary events, one-time tasks, reminders, plans, schedules, or casual small talk as user profile.',
+        'Use category only from: identity, preference, dislike, habit, birthday, occupation, relationship, boundary, health, other.',
+        'Use a concise stable key such as name, preferred_name, birthday, coffee, sleep_habit, study_habit, communication_boundary.',
+        'Use value as a short normalized phrase. Write content as a clean natural Chinese sentence.',
+        'If new information conflicts with or replaces an old user memory, use action "update" and targetId.',
+        'If the same category and key already exists, prefer update over create.',
+        'For uncertain inference, skip instead of inventing a profile.',
+        'Never output type other than "user".',
+        'Examples:',
+        '- User: "\u6211\u53eb\u5c0f\u6797" => category identity, key name, value "\u5c0f\u6797".',
+        '- User: "\u4ee5\u540e\u53eb\u6211\u6797\u6797" => category identity, key preferred_name, value "\u6797\u6797".',
+        '- User: "\u51b0\u7f8e\u5f0f\u633a\u597d\u559d\u7684" => category preference, key coffee, value "\u559c\u6b22\u51b0\u7f8e\u5f0f".',
+        '- User: "\u6211\u4e0d\u559c\u6b22\u5496\u5561\u4e86" with an old coffee preference => update the old coffee memory.',
+        '- User: "\u4eca\u5929\u665a\u4e0a\u8981\u5403\u836f" => skip; it is a task/reminder, not profile.',
+        `JSON schema example: ${JSON.stringify(schema)}`
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        userMessage: userText,
+        profileReason,
+        existingUserMemories: existingMemories.user || [],
+        activeShortTerm: existingMemories.shortTerm || []
+      })
+    }
+  ];
+}
+
+function buildProfileSummaryMessages(existingMemories) {
+  const schema = {
+    shouldRemember: true,
+    type: 'user',
+    action: 'update',
+    targetId: '',
+    content: '\u7528\u6237\u5c55\u73b0\u51fa\u6301\u7eed\u5b66\u4e60\u3001\u613f\u610f\u7167\u987e\u81ea\u5df1\u548c\u6e05\u6670\u8868\u8fbe\u9700\u6c42\u7684\u4f18\u70b9\u3002',
+    category: 'profile_summary',
+    key: 'strength_summary',
+    value: '\u6301\u7eed\u5b66\u4e60\uff0c\u613f\u610f\u7167\u987e\u81ea\u5df1\uff0c\u6e05\u6670\u8868\u8fbe\u9700\u6c42',
+    confidence: 3,
+    pinned: true,
+    tags: ['\u7528\u6237\u753b\u50cf', '\u4f18\u70b9'],
+    importance: 4,
+    sourceMessage: '',
+    reason: ''
+  };
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You update one pinned user-profile strength summary for a desktop pet.',
+        'Return exactly one JSON object and no markdown.',
+        'Summarize only the user strengths that are supported by saved user memories and recently settled short-term context.',
+        'Do not mention flaws, diagnoses, sensitive labels, personality judgments, or unsupported assumptions.',
+        'Use warm, concrete Chinese suitable for companion context.',
+        'Update the existing profile_summary target when present; otherwise create one.',
+        'Always use type "user", category "profile_summary", key "strength_summary", pinned true, and tags ["\u7528\u6237\u753b\u50cf","\u4f18\u70b9"].',
+        'If there is not enough positive evidence, return shouldRemember false and action skip.',
+        `JSON schema example: ${JSON.stringify(schema)}`
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        existingUserMemories: existingMemories.user || [],
+        recentShortTerm: (existingMemories.shortTerm || []).filter((entry) => entry.profileCandidate).slice(-8)
       })
     }
   ];
@@ -570,6 +683,32 @@ async function callMemoryAnalysisApi(config, userText, existingMemories) {
   return extractJsonObject(content);
 }
 
+async function callUserProfileAnalysisApi(config, userText, existingMemories, profileReason = '') {
+  const response = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: buildUserProfileAnalysisMessages(userText, existingMemories, profileReason),
+      temperature: 0,
+      max_tokens: 700,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`User profile memory API failed: ${response.status} ${detail.slice(0, 160)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  return extractJsonObject(content);
+}
+
 async function callShortTermAnalysisApi(config, userText, activeShortTerm) {
   const response = await fetch(config.endpoint, {
     method: 'POST',
@@ -589,6 +728,32 @@ async function callShortTermAnalysisApi(config, userText, activeShortTerm) {
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
     throw new Error(`Short-term memory API failed: ${response.status} ${detail.slice(0, 160)}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+  return extractJsonObject(content);
+}
+
+async function callProfileSummaryApi(config, existingMemories) {
+  const response = await fetch(config.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: buildProfileSummaryMessages(existingMemories),
+      temperature: 0,
+      max_tokens: 650,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Profile summary API failed: ${response.status} ${detail.slice(0, 160)}`);
   }
 
   const data = await response.json();
@@ -709,19 +874,81 @@ async function settleExpiredShortTermMemories(config) {
   return { settled, removed };
 }
 
+function shouldUpdateProfileSummary(petData = {}) {
+  const lastUpdatedAt = String(petData.prompt?.profileSummaryLastUpdatedAt || '');
+  if (!lastUpdatedAt) return true;
+  const timestamp = Date.parse(lastUpdatedAt);
+  return Number.isNaN(timestamp) || Date.now() - timestamp >= profileSummaryIntervalMs;
+}
+
+function markProfileSummaryChecked() {
+  updatePetData(app, (data) => {
+    data.prompt = {
+      ...(data.prompt || {}),
+      profileSummaryLastUpdatedAt: new Date().toISOString()
+    };
+    return data;
+  });
+}
+
+async function updatePinnedProfileSummaryIfNeeded(config, petData) {
+  if (!shouldUpdateProfileSummary(petData)) {
+    return { remembered: false, reason: 'profile_summary_not_due' };
+  }
+
+  try {
+    const existingMemories = summarizeMemoriesForAnalysis(petData.memory);
+    const rawDecision = await callProfileSummaryApi(config, existingMemories);
+    const existingSummary = (existingMemories.user || []).find((entry) => (
+      entry.category === 'profile_summary' && entry.key === 'strength_summary'
+    ));
+    if (rawDecision && typeof rawDecision === 'object') {
+      rawDecision.type = 'user';
+      rawDecision.category = 'profile_summary';
+      rawDecision.key = 'strength_summary';
+      rawDecision.pinned = true;
+      rawDecision.tags = ['\u7528\u6237\u753b\u50cf', '\u4f18\u70b9'];
+      if (existingSummary && rawDecision.action !== 'skip') {
+        rawDecision.action = 'update';
+        rawDecision.targetId = existingSummary.id;
+      }
+    }
+    const normalizedDecision = memoryService.normalizeAiMemoryDecision(rawDecision, existingMemories);
+    const applied = memoryService.applyAnalyzedMemory(app, normalizedDecision);
+    markProfileSummaryChecked();
+    return applied;
+  } catch (error) {
+    console.warn('Profile summary update failed.', error?.message || error);
+    markProfileSummaryChecked();
+    return { remembered: false, reason: 'profile_summary_failed' };
+  }
+}
+
+async function analyzeAndApplyUserProfileMemory(config, userText, petData, profileReason = '') {
+  const existingMemories = summarizeMemoriesForAnalysis(petData.memory);
+  const rawDecision = await callUserProfileAnalysisApi(config, userText, existingMemories, profileReason);
+  if (rawDecision && typeof rawDecision === 'object') {
+    rawDecision.type = 'user';
+    rawDecision.sourceMessage = userText;
+  }
+  const normalizedDecision = memoryService.normalizeAiMemoryDecision(rawDecision, existingMemories);
+  return memoryService.applyAnalyzedMemory(app, normalizedDecision);
+}
+
 async function analyzeAndApplyMemory(textValue) {
   const rawUserText = String(textValue || '').trim();
   const userText = trimTextByChars(rawUserText, getDefaultTokenBudget().userInputMaxChars);
   const shouldAnalyzeShortTerm = memoryService.shouldAnalyzeShortTermMemory(userText);
   const shouldAnalyzeLongTerm = memoryService.shouldAnalyzeMemory(userText);
+  const shouldAnalyzeProfileExplicit = memoryService.shouldAnalyzeUserProfileMemory(userText);
 
-  if (!userText || (!shouldAnalyzeShortTerm && !shouldAnalyzeLongTerm)) {
+  if (!userText || (!shouldAnalyzeShortTerm && !shouldAnalyzeLongTerm && !shouldAnalyzeProfileExplicit)) {
     return getMemoryAnalysisSkippedResult('memory_keyword_not_matched');
   }
 
   const config = readApiConfig({ includeSecret: true });
   if (!config.apiKey) {
-    return shouldAnalyzeLongTerm
+    return shouldAnalyzeLongTerm || shouldAnalyzeProfileExplicit
       ? getMemoryAnalysisUnavailableResult('missing_api_key')
       : getMemoryAnalysisSkippedResult('short_term_ai_unavailable');
   }
@@ -732,44 +959,73 @@ async function analyzeAndApplyMemory(textValue) {
     });
 
     let petData = loadPetData(app);
+    await updatePinnedProfileSummaryIfNeeded(config, petData);
+    petData = loadPetData(app);
+
+    let shortTermResult = { remembered: false, entry: null };
     if (shouldAnalyzeShortTerm) {
-      await applyShortTermWorkingMemory(config, userText, petData).catch((error) => {
+      shortTermResult = await applyShortTermWorkingMemory(config, userText, petData).catch((error) => {
         console.warn('Short-term working memory update failed.', error?.message || error);
+        return { remembered: false, entry: null };
       });
       petData = loadPetData(app);
     }
 
-    if (!shouldAnalyzeLongTerm) {
-      return getMemoryAnalysisSkippedResult('long_term_keyword_not_matched');
+    const appliedMemories = [];
+    const profileCandidate = Boolean(shortTermResult?.entry?.profileCandidate);
+    const profileReason = shortTermResult?.entry?.profileReason || '';
+    if (shouldAnalyzeProfileExplicit || profileCandidate) {
+      const profileApplied = await analyzeAndApplyUserProfileMemory(
+        config,
+        userText,
+        petData,
+        profileReason || (shouldAnalyzeProfileExplicit ? 'explicit_profile_trigger' : '')
+      ).catch((error) => {
+        console.warn('User profile memory analysis failed.', error?.message || error);
+        return { remembered: false, reason: 'profile_ai_failed' };
+      });
+      if (profileApplied.remembered) {
+        appliedMemories.push(profileApplied);
+        petData = loadPetData(app);
+      }
     }
 
-    const existingMemories = summarizeMemoriesForAnalysis(petData.memory);
-    const rawDecision = await callMemoryAnalysisApi(config, userText, existingMemories);
-    const rawItems = rawDecision && typeof rawDecision === 'object' && Array.isArray(rawDecision.items)
-      ? rawDecision.items
-      : [rawDecision];
-    const correctedDecision = { items: rawItems.map((item) => correctOneTimeReminderDecision(item, userText)) };
-    const normalizedDecisions = memoryService.normalizeAiMemoryDecisions(correctedDecision, existingMemories);
-    const applied = memoryService.applyAnalyzedMemories(app, normalizedDecisions);
+    let normalizedDecisions = [];
+    if (shouldAnalyzeLongTerm) {
+      const existingMemories = summarizeMemoriesForAnalysis(petData.memory);
+      const rawDecision = await callMemoryAnalysisApi(config, userText, existingMemories).catch((error) => {
+        console.warn('Long-term memory analysis failed.', error?.message || error);
+        return null;
+      });
+      if (rawDecision) {
+        const rawItems = rawDecision && typeof rawDecision === 'object' && Array.isArray(rawDecision.items)
+          ? rawDecision.items
+          : [rawDecision];
+        const correctedDecision = { items: rawItems.map((item) => correctOneTimeReminderDecision(item, userText)) };
+        normalizedDecisions = memoryService.normalizeAiMemoryDecisions(correctedDecision, existingMemories)
+          .filter((item) => item.type === 'longTerm' || item.action === 'skip');
+        appliedMemories.push(...memoryService.applyAnalyzedMemories(app, normalizedDecisions));
+      }
+    }
 
-    if (!applied.length) {
+    if (!appliedMemories.length) {
       const reason = normalizedDecisions.find((item) => item.reason)?.reason || 'ai_skipped_memory';
       return getMemoryAnalysisSkippedResult(reason);
     }
 
-    const first = applied[0];
+    const first = appliedMemories[0];
     return {
       ok: true,
       remembered: true,
-      action: applied.length > 1 ? 'multiple' : first.action,
-      type: applied.length > 1 ? 'mixed' : first.type,
+      action: appliedMemories.length > 1 ? 'multiple' : first.action,
+      type: appliedMemories.length > 1 ? 'mixed' : first.type,
       entry: first.entry,
-      entries: applied.map((item) => ({
+      entries: appliedMemories.map((item) => ({
         action: item.action,
         type: item.type,
         entry: item.entry
       })),
-      message: buildMemoryConfirmation(applied),
+      message: buildMemoryConfirmation(appliedMemories),
       reason: normalizedDecisions.map((item) => item.reason).filter(Boolean).join('; ')
     };
   } catch (error) {

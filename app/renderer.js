@@ -656,10 +656,14 @@ function startInlineMemoryEdit(item, type, memory) {
 
 function renderMemoryList(type, memories) {
   const container = getMemoryContainer(type);
-  container._lastMemories = Array.isArray(memories) ? memories : [];
+  const sourceMemories = Array.isArray(memories) ? memories : [];
+  const displayMemories = type === 'user'
+    ? [...sourceMemories].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+    : sourceMemories;
+  container._lastMemories = displayMemories;
   container.innerHTML = '';
 
-  if (!Array.isArray(memories) || memories.length === 0) {
+  if (displayMemories.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'memory-empty';
     empty.textContent = t('noMemories');
@@ -667,15 +671,20 @@ function renderMemoryList(type, memories) {
     return;
   }
 
-  for (const memory of memories) {
+  for (const memory of displayMemories) {
     const item = document.createElement('div');
     item.className = 'memory-item';
 
     const content = document.createElement('div');
     content.className = 'memory-item__content';
-    content.textContent = type === 'shortTerm' && memory.topic
-      ? `[${memory.topic}] ${memory.content || t('empty')}`
-      : memory.content || t('empty');
+    if (type === 'shortTerm' && memory.topic) {
+      content.textContent = `[${memory.topic}] ${memory.content || t('empty')}`;
+    } else if (type === 'user' && (memory.category || memory.key)) {
+      const marker = [memory.category, memory.key].filter(Boolean).join('/');
+      content.textContent = `${memory.pinned ? '[PIN] ' : ''}[${marker}] ${memory.content || t('empty')}`;
+    } else {
+      content.textContent = memory.content || t('empty');
+    }
 
     const edit = document.createElement('button');
     edit.className = 'memory-edit';

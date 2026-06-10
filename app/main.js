@@ -321,6 +321,27 @@ function getMemoryAnalysisSkippedResult(reason = 'not_memory_worthy') {
   };
 }
 
+function buildMemoryConfirmation(applied = []) {
+  if (applied.length > 1) {
+    return '\u6211\u660e\u767d\u4e86\uff0c\u8fd9\u51e0\u4ef6\u4e8b\u6211\u4f1a\u5206\u5f00\u8bb0\u597d\uff0c\u4e0d\u628a\u5b83\u4eec\u6df7\u5728\u4e00\u8d77\u3002';
+  }
+
+  const first = applied[0] || {};
+  const entry = first.entry || {};
+  const reminder = entry.reminder && typeof entry.reminder === 'object' ? entry.reminder : null;
+
+  if (first.action === 'update') {
+    return '\u6211\u61c2\u4e86\uff0c\u4e4b\u524d\u90a3\u6761\u6211\u5df2\u7ecf\u66ff\u4f60\u6539\u597d\u4e86\u3002';
+  }
+  if (first.type === 'longTerm' && reminder?.enabled) {
+    return '\u55ef\uff0c\u8fd9\u6761\u63d0\u9192\u6211\u8bb0\u4e0b\u4e86\uff0c\u4e4b\u540e\u4f1a\u6309\u5b83\u6765\u63d0\u9192\u4f60\u3002';
+  }
+  if (first.type === 'longTerm') {
+    return '\u55ef\uff0c\u8fd9\u4ef6\u4e8b\u6211\u8bb0\u4e0b\u6765\u4e86\uff0c\u4ee5\u540e\u804a\u5230\u65f6\u6211\u4f1a\u63a5\u4e0a\u524d\u6587\u3002';
+  }
+  return '\u597d\u7684\uff0c\u6211\u8bb0\u4f4f\u4e86\u3002\u8fd9\u4f1a\u5e2e\u6211\u4ee5\u540e\u66f4\u597d\u5730\u7406\u89e3\u4f60\u3002';
+}
+
 function summarizeMemoriesForAnalysis(memory = {}) {
   const summarize = (type) => {
     const bucket = Array.isArray(memory[type]) ? memory[type] : [];
@@ -748,11 +769,7 @@ async function analyzeAndApplyMemory(textValue) {
         type: item.type,
         entry: item.entry
       })),
-      message: applied.length > 1
-        ? '\u6211\u5df2\u6309\u4e0a\u4e0b\u6587\u6574\u7406\u5e76\u4fdd\u5b58\u4e86\u591a\u6761\u8bb0\u5fc6\u3002'
-        : first.action === 'update'
-          ? '\u6211\u5df2\u66f4\u65b0\u8fd9\u6761\u8bb0\u5fc6\u3002'
-          : '\u597d\u7684\uff0c\u6211\u5df2\u7ecf\u6309\u89c4\u8303\u5e2e\u4f60\u8bb0\u4e0b\u6765\u4e86\u3002',
+      message: buildMemoryConfirmation(applied),
       reason: normalizedDecisions.map((item) => item.reason).filter(Boolean).join('; ')
     };
   } catch (error) {

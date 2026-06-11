@@ -250,6 +250,7 @@ let appVisible = true;
 let chatHistory = [];
 let chatBusy = false;
 let roxyLanguage = getLanguage();
+let statePanelLoadToken = 0;
 
 function getLanguage() {
   const saved = localStorage.getItem('roxyLanguage');
@@ -556,7 +557,13 @@ function openChatPanel() {
   closeApiPanel();
   closeStatePanel();
   chatPanel.classList.remove('hidden');
-  chatInput.focus();
+  chatInput.disabled = false;
+  chatSend.disabled = chatBusy;
+  setTimeout(() => {
+    if (!chatPanel.classList.contains('hidden')) {
+      chatInput.focus();
+    }
+  }, 0);
 }
 
 function closeChatPanel() {
@@ -749,6 +756,7 @@ async function clearAllMemoryTypes() {
 }
 
 async function loadStatePanel() {
+  const loadToken = ++statePanelLoadToken;
   setStateStatus(t('loading'));
   try {
     const [affection, petData, userMemories, longTermMemories, shortTermMemories] = await Promise.all([
@@ -758,6 +766,7 @@ async function loadStatePanel() {
       window.petAPI?.listMemories?.('longTerm'),
       window.petAPI?.listMemories?.('shortTerm')
     ]);
+    if (loadToken !== statePanelLoadToken || statePanel.classList.contains('hidden')) return;
     const stats = petData?.prompt?.lastPromptStats || {};
 
     setKeyValues(affectionView, [
@@ -776,6 +785,7 @@ async function loadStatePanel() {
     renderMemoryList('shortTerm', shortTermMemories);
     setStateStatus(t('ready'));
   } catch {
+    if (loadToken !== statePanelLoadToken || statePanel.classList.contains('hidden')) return;
     setStateStatus(t('stateLoadFailed'));
     showBubble(t('stateLoadFailed'), 5000);
   }
@@ -789,6 +799,10 @@ async function openStatePanel() {
 }
 
 function closeStatePanel() {
+  statePanelLoadToken += 1;
+  if (statePanel.contains(document.activeElement)) {
+    document.activeElement.blur();
+  }
   statePanel.classList.add('hidden');
 }
 

@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('petAPI', {
     ipcRenderer.invoke('affection:adjust', delta, eventType, reason, options)
   ),
   detectAffectionEvent: (text) => ipcRenderer.invoke('affection:detect-event', text),
+  focusWindow: () => ipcRenderer.invoke('window:focus'),
   setWindowScale: (scale) => ipcRenderer.invoke('set-window-scale', scale),
   startDragAnimation: () => ipcRenderer.send('drag-animation-start'),
   stopDragAnimation: () => ipcRenderer.send('drag-animation-stop')

@@ -1308,6 +1308,14 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
   mainWindow.setBounds({ x, y, width: nextWidth, height: nextHeight });
 });
 
+ipcMain.handle('window:focus', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return mainWindow.isFocused();
+});
+
 ipcMain.handle('api-config-get', () => readApiConfig());
 
 ipcMain.handle('api-config-save', (_event, nextConfig) => saveApiConfig(nextConfig));

@@ -525,6 +525,24 @@ function closeApiPanel() {
   apiPanel.classList.add('hidden');
 }
 
+function focusChatInput() {
+  chatInput.disabled = false;
+  chatSend.disabled = chatBusy;
+  const applyFocus = () => {
+    if (chatPanel.classList.contains('hidden')) return;
+    chatInput.focus({ preventScroll: true });
+  };
+  const focusWindow = window.petAPI?.focusWindow?.();
+  Promise.resolve(focusWindow)
+    .catch(() => false)
+    .finally(() => {
+      applyFocus();
+      requestAnimationFrame(applyFocus);
+      setTimeout(applyFocus, 50);
+      setTimeout(applyFocus, 150);
+    });
+}
+
 async function saveApiSettings(clearApiKey = false) {
   apiSave.disabled = true;
   apiStatus.dataset.statusKey = 'saving';
@@ -557,13 +575,7 @@ function openChatPanel() {
   closeApiPanel();
   closeStatePanel();
   chatPanel.classList.remove('hidden');
-  chatInput.disabled = false;
-  chatSend.disabled = chatBusy;
-  setTimeout(() => {
-    if (!chatPanel.classList.contains('hidden')) {
-      chatInput.focus();
-    }
-  }, 0);
+  focusChatInput();
 }
 
 function closeChatPanel() {
@@ -891,7 +903,7 @@ async function sendChatMessage(event) {
   } finally {
     chatBusy = false;
     chatSend.disabled = false;
-    chatInput.focus();
+    focusChatInput();
   }
 }
 

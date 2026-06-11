@@ -405,6 +405,48 @@ body {
   justify-content: flex-end;
 }
 
+.confirm-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(31, 24, 38, 0.18);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.confirm-dialog {
+  width: min(260px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid rgba(65, 48, 84, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 252, 248, 0.98);
+  color: #30273b;
+  box-shadow: 0 14px 36px rgba(42, 33, 50, 0.24);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.confirm-dialog__text {
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-dialog__ok {
+  border-color: rgba(166, 58, 71, 0.32);
+  color: #8a2635;
+}
+
 #stage:hover .controls {
   opacity: 1;
 }

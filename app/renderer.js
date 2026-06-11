@@ -595,6 +595,64 @@ function setKeyValues(container, rows) {
   }
 }
 
+function showConfirmDialog(message) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'confirm-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+
+    const text = document.createElement('div');
+    text.className = 'confirm-dialog__text';
+    text.textContent = message;
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-dialog__actions';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'confirm-dialog__cancel';
+    cancel.textContent = t('cancel');
+
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'confirm-dialog__ok';
+    ok.textContent = t('clear');
+
+    function finish(value) {
+      overlay.remove();
+      resolve(value);
+    }
+
+    cancel.addEventListener('click', () => finish(false));
+    ok.addEventListener('click', () => finish(true));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    overlay.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finish(true);
+      }
+    });
+
+    actions.appendChild(cancel);
+    actions.appendChild(ok);
+    dialog.appendChild(text);
+    dialog.appendChild(actions);
+    overlay.appendChild(dialog);
+    stage.appendChild(overlay);
+    cancel.focus();
+  });
+}
+
 function formatWarnings(warnings) {
   if (!Array.isArray(warnings) || warnings.length === 0) return t('none');
   return warnings.join(', ');
@@ -716,7 +774,7 @@ function renderMemoryList(type, memories) {
     remove.type = 'button';
     remove.textContent = t('delete');
     remove.addEventListener('click', async () => {
-      const ok = window.confirm(t('deleteMemoryConfirm'));
+      const ok = await showConfirmDialog(t('deleteMemoryConfirm'));
       if (!ok) return;
       try {
         await window.petAPI?.deleteMemory?.(type, memory.id);
@@ -737,7 +795,7 @@ function renderMemoryList(type, memories) {
 
 async function clearMemoryType(type) {
   const label = getMemoryTypeLabel(type);
-  const ok = window.confirm(t('clearTypeConfirm', { label }));
+  const ok = await showConfirmDialog(t('clearTypeConfirm', { label }));
   if (!ok) return;
   try {
     const result = await window.petAPI?.clearMemories?.(type);
@@ -750,9 +808,9 @@ async function clearMemoryType(type) {
 }
 
 async function clearAllMemoryTypes() {
-  const firstOk = window.confirm(t('clearAllConfirmFirst'));
+  const firstOk = await showConfirmDialog(t('clearAllConfirmFirst'));
   if (!firstOk) return;
-  const secondOk = window.confirm(t('clearAllConfirmSecond'));
+  const secondOk = await showConfirmDialog(t('clearAllConfirmSecond'));
   if (!secondOk) return;
   try {
     const result = await window.petAPI?.clearAllMemories?.();

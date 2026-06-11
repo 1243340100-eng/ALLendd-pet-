@@ -1,6 +1,6 @@
 {
   "name": "electron-pet-framework",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "A reusable Electron desktop pet framework with AI chat, memory, reminders, and placeholder test mode.",
   "main": "app/main.js",
   "author": "Codex",
@@ -11,6 +11,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win portable",
     "test:harness": "node app/services/conversation-harness/tests/analyzer.test.js && node app/services/conversation-harness/tests/policy.test.js && node app/services/conversation-harness/tests/playfulness.test.js && node app/services/conversation-harness/tests/boundary.test.js && node app/services/conversation-harness/tests/post-check.test.js",
+    "test:character": "node app/services/conversation-harness/tests/character-fidelity.test.js",
     "demo:harness": "node app/services/conversation-harness/demo/run-demo.js"
   },
   "devDependencies": {

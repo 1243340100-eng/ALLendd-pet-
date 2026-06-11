@@ -6,6 +6,7 @@ const { loadPetData, updatePetData } = require('./services/pet-data-store');
 const memoryService = require('./services/memory-service');
 const affectionService = require('./services/affection-service');
 const { buildRoxyPrompt } = require('./services/prompt-builder');
+const petProfile = require('./config/pet-profile');
 const {
   handleUserMessage: handleHarnessUserMessage,
   getPersonalityProfile,
@@ -1085,12 +1086,13 @@ async function sendChatMessage(payload = {}) {
 
   let promptBuild;
   let harnessResult = null;
+  const harnessPersonalityId = petProfile.conversationPersonalityId || 'warm_friend';
   try {
     const petData = loadPetData(app);
     harnessResult = await handleHarnessUserMessage(
       userText,
       petData.prompt?.conversationHarnessState,
-      getPersonalityProfile(petData.prompt?.conversationPersonalityId || 'warm_friend')
+      getPersonalityProfile(harnessPersonalityId)
     ).catch((error) => {
       console.warn('Conversation harness failed; chat will continue.', error?.message || error);
       return null;
@@ -1136,6 +1138,8 @@ async function sendChatMessage(payload = {}) {
     historyChars: historyBudget.chars,
     userInputChars: userText.length,
     harness: harnessResult ? {
+      personalityId: harnessPersonalityId,
+      personalitySource: 'pet-profile',
       leadMode: harnessResult.policy.leadMode,
       responseDepth: harnessResult.policy.responseDepth,
       boundaryAction: harnessResult.policy.boundaryAction,

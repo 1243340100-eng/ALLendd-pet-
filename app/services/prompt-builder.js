@@ -181,6 +181,36 @@ function buildMemoryLines(injectedMemories) {
   return injectedMemories.map((memory) => `- ${formatMemoryLabel(memory.type)}\uff1a${memory.content}`);
 }
 
+function normalizeList(value) {
+  if (Array.isArray(value)) return value.map(cleanText).filter(Boolean);
+  const text = cleanText(value);
+  return text ? [text] : [];
+}
+
+function buildCharacterFidelitySection() {
+  const fidelity = petProfile.roleFidelity || petProfile.characterFidelity || {};
+  const coreIdentity = normalizeList(fidelity.coreIdentity);
+  const speakingStyle = normalizeList(fidelity.speakingStyle);
+  const relationshipBoundary = normalizeList(fidelity.relationshipBoundary);
+  const forbiddenDrift = normalizeList(fidelity.forbiddenDrift);
+  const commonTone = normalizeList(fidelity.commonTone);
+
+  const lines = [
+    '\u3010\u89d2\u8272\u8fd8\u539f\u7ea6\u675f\u3011',
+    `- fixedPersonalityId: ${cleanText(petProfile.conversationPersonalityId || 'warm_friend')}`,
+    '- \u4e00\u4e2a\u6253\u5305\u7248\u672c\u53ea\u5bf9\u5e94\u4e00\u4e2a\u56fa\u5b9a\u89d2\u8272\uff1b\u4e0d\u8981\u6839\u636e\u7528\u6237\u8bed\u8a00\u6216\u8bdd\u9898\u5207\u6362\u4eba\u683c\u3002',
+    '- \u3010\u89d2\u8272\u6838\u5fc3\u8bbe\u5b9a\u3011\u7684\u4f18\u5148\u7ea7\u9ad8\u4e8e\u8bb0\u5fc6\u3001\u597d\u611f\u5ea6\u548c conversation harness\u3002',
+    '- conversation harness \u53ea\u80fd\u63a7\u5236\u56de\u590d\u6df1\u5ea6\u3001\u8282\u594f\u3001\u8fb9\u754c\u548c\u73a9\u7b11\u5f00\u5173\uff0c\u4e0d\u80fd\u6539\u5199\u89d2\u8272\u8eab\u4efd\u3002'
+  ];
+
+  if (coreIdentity.length) lines.push(`- coreIdentity: ${coreIdentity.join(' / ')}`);
+  if (speakingStyle.length) lines.push(`- speakingStyle: ${speakingStyle.join(' / ')}`);
+  if (relationshipBoundary.length) lines.push(`- relationshipBoundary: ${relationshipBoundary.join(' / ')}`);
+  if (forbiddenDrift.length) lines.push(`- forbiddenDrift: ${forbiddenDrift.join(' / ')}`);
+  if (commonTone.length) lines.push(`- commonTone: ${commonTone.join(' / ')}`);
+  return lines.join('\n');
+}
+
 function buildAffectionSection(affection = {}) {
   const level = cleanText(affection.level || 'familiar');
   const score = Number.isFinite(Number(affection.score)) ? Number(affection.score) : 50;
@@ -202,6 +232,7 @@ function buildHarnessSection(harness = {}) {
     `- mustInclude: ${(harness.plan.mustInclude || []).map(cleanText).filter(Boolean).join(', ') || '\u65e0'}`,
     `- mustAvoid: ${(harness.plan.mustAvoid || []).map(cleanText).filter(Boolean).join(', ') || '\u65e0'}`,
     `- toneHints: ${(harness.policy.toneHints || []).map(cleanText).filter(Boolean).join(', ') || '\u65e0'}`,
+    '\u672c\u6bb5\u662f\u4f4e\u4f18\u5148\u7ea7\u7684\u5bf9\u8bdd\u7b56\u7565\uff1b\u5b83\u4e0d\u662f\u4eba\u683c\u8bbe\u5b9a\uff0c\u4e0d\u80fd\u8986\u76d6\u89d2\u8272\u6838\u5fc3\u8bbe\u5b9a\u6216\u89d2\u8272\u8fd8\u539f\u7ea6\u675f\u3002',
     '\u6700\u7ec8\u56de\u590d\u5fc5\u987b\u6267\u884c\u4e0a\u9762\u7684\u7b56\u7565\uff1b\u4e0d\u8981\u81ea\u884c\u589e\u52a0\u6492\u5a07\u3001\u62d2\u7edd\u6216\u4e3b\u52a8\u63a5\u7ba1\u3002'
   ].join('\n');
 }
@@ -221,6 +252,7 @@ function buildRoxyPrompt(options = {}) {
   const requiredSections = [
     '\u3010\u89d2\u8272\u6838\u5fc3\u8bbe\u5b9a\u3011',
     CORE_IDENTITY.join('\n'),
+    buildCharacterFidelitySection(),
     '\u3010\u56de\u590d\u98ce\u683c\u3011',
     RESPONSE_STYLE.join('\n'),
     '\u3010\u5b89\u5168\u4e0e\u8fb9\u754c\u3011',

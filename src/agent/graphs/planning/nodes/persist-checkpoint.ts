@@ -11,9 +11,17 @@ import { createLogger } from '../../../../infrastructure/logging/logger';
 
 const log = createLogger('PlanningGraph:persistCheckpoint');
 
+/** 修复 5：构建 scope_key */
+function buildScopeKey(userId: string, characterId: string): string {
+  return `${userId}:${characterId}`;
+}
+
 /** 创建 persist_checkpoint 节点 */
 export function createPersistCheckpointNode() {
   return function persistCheckpoint(state: PlanningStateType): Partial<PlanningStateType> {
+    // 修复 5：scope_key 按 userId + characterId 隔离
+    const scopeKey = buildScopeKey(state.userId, state.characterId);
+
     // 如果已发布，消费 checkpoint（不再需要恢复）
     if (state.published) {
       if (state.checkpointId) {
@@ -33,8 +41,6 @@ export function createPersistCheckpointNode() {
     }
 
     // 如果需要追问用户、等待确认、或有未发布的草案，保存 checkpoint
-    // 要求 4：PlanningGraph 使用持久化 checkpoint 保存完整规划对话
-    // 测试要求：重启后恢复规划对话、草案版本和 active 气泡
     if (state.shouldAskUser || state.awaitingConfirmation || (state.currentDraft && !state.published)) {
       const checkpointId = state.checkpointId || `planning-${state.traceId}-${Date.now()}`;
       try {
@@ -43,6 +49,7 @@ export function createPersistCheckpointNode() {
           currentDraft: state.currentDraft,
           draftVersion: state.draftVersion,
           userConfirmed: state.userConfirmed,
+          awaitingConfirmation: state.awaitingConfirmation,
           userId: state.userId,
           characterId: state.characterId
         });
@@ -55,13 +62,15 @@ export function createPersistCheckpointNode() {
           id: checkpointId,
           graph_type: 'planning',
           state_json: stateJson,
-          reason
+          reason,
+          scope_key: scopeKey
         });
         log.info('checkpoint saved', {
           traceId: state.traceId,
           fields: {
             checkpointId,
             reason,
+            scopeKey,
             messageCount: state.messages.length,
             draftVersion: state.draftVersion
           }

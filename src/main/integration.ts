@@ -137,6 +137,13 @@ export function initNewArchitecture(options: InitOptions): void {
     secretStore: options.secretStore,
     db: getDatabase()
   });
+  // 注入配置重载函数：每次 invoke 前从 app_settings 重新读取模型别名，
+  // 确保用户修改 planningModel 后立即生效，无需重启。
+  modelGateway.setConfigReloader(() => {
+    const freshDefaults = getDefaultAppConfig();
+    const freshUserAliases = settingsRepository.getModelAliases();
+    return applyUserModelAliases(freshDefaults, freshUserAliases);
+  });
 
   // 5. 初始化 CharacterPackManager
   characterPackManager = new CharacterPackManager();
@@ -960,6 +967,86 @@ export async function handlePlanningConfirm(): Promise<PlanningResponseDTO> {
 }
 
 /**
+ * 处理手动编辑草案（不调用模型）。
+ * 供 main.js 的 planning:update-draft IPC 调用。
+ *
+ * 重构要点：
+ * - renderer 发送明确的 patch_task/delete_task/move_task 事件，不再发送完整任务数组给模型解释
+ * - UI 手动操作经过 PlanningGraph Tool 节点，但不调用模型（isManualEdit=true，直接执行工具）
+ * - 删除任务后数据库必须真正删除，重启后不能恢复
+ * - isManualEdit 必须实际传入并使用
+ */
+export async function handlePlanningManualEdit(payload: {
+  planId: string;
+  action: 'patch_task' | 'delete_task' | 'move_task';
+  taskId?: string;
+  patch?: { content?: string; start_time?: string; end_time?: string; order_index?: number };
+  tasks?: Array<{ id?: string; content?: string; start_time?: string; end_time?: string; order_index?: number }>;
+}): Promise<PlanningResponseDTO> {
+  if (!planningRunner) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+
+  const planId = String(payload?.planId || '');
+  if (!planId) {
+    return { ok: false, reason: 'missing-plan-id' };
+  }
+
+  const draftPlan = planRepository.getDraftPlan();
+  if (!draftPlan || draftPlan.id !== planId) {
+    return { ok: false, reason: 'draft-not-found' };
+  }
+
+  // 根据 action 类型构建 AgentAction，直接通过 Tool 节点执行，不调用模型
+  let agentAction: import('../agent/graphs/planning/state').AgentAction;
+
+  if (payload.action === 'delete_task') {
+    if (!payload.taskId) {
+      return { ok: false, reason: 'missing-task-id' };
+    }
+    agentAction = {
+      type: 'delete_task',
+      taskId: payload.taskId,
+      message: '已删除任务'
+    };
+  } else if (payload.action === 'patch_task') {
+    if (!payload.taskId || !payload.patch) {
+      return { ok: false, reason: 'missing-task-id-or-patch' };
+    }
+    agentAction = {
+      type: 'patch_tasks',
+      patches: [{ id: payload.taskId, ...payload.patch }],
+      message: '已修改任务'
+    };
+  } else if (payload.action === 'move_task') {
+    // move_task 本质是 patch order_index
+    if (!payload.tasks || payload.tasks.length === 0) {
+      return { ok: false, reason: 'missing-tasks-for-move' };
+    }
+    agentAction = {
+      type: 'patch_tasks',
+      patches: payload.tasks.map(t => ({
+        id: t.id,
+        order_index: t.order_index,
+        start_time: t.start_time,
+        end_time: t.end_time
+      })),
+      message: '已调整任务顺序'
+    };
+  } else {
+    return { ok: false, reason: 'unknown-action' };
+  }
+
+  // 直接通过 PlanningGraphRunner 的 submitManualEdit 执行，不调用模型
+  return planningRunner.submitManualEdit({
+    userId: getUserId(),
+    characterId: characterPackManager?.getActiveCharacterId() ?? 'default-roxy',
+    planId,
+    agentAction
+  });
+}
+
+/**
  * 获取当前活跃计划（含任务）。
  * 供 main.js 的 planning:get-active IPC 调用。
  */
@@ -983,6 +1070,30 @@ export function getDraftPlan(): any | null {
     { id: plan.id, date: plan.date, tasks: plan.tasks },
     plan.draft_version ?? 1
   );
+}
+
+/**
+ * 获取规划状态（供 planning:start 恢复真实对话历史）。
+ * 返回持久化的 messages、phase、awaitingConfirmation 和 currentDraft。
+ *
+ * 修复 5：renderer 恢复真实计划对话，不显示一条虚假的通用提示代替历史。
+ */
+export function getPlanningState(): {
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  phase: 'idle' | 'asking' | 'drafting' | 'awaiting_confirmation' | 'published';
+  awaitingConfirmation: boolean;
+  draftPlan: any | null;
+} {
+  if (!planningRunner) {
+    return { messages: [], phase: 'idle', awaitingConfirmation: false, draftPlan: getDraftPlan() };
+  }
+  const state = planningRunner.getPlanningState(getUserId(), characterPackManager?.getActiveCharacterId() ?? 'default-roxy');
+  return {
+    messages: state.messages,
+    phase: state.phase,
+    awaitingConfirmation: state.awaitingConfirmation,
+    draftPlan: state.currentDraft ?? getDraftPlan()
+  };
 }
 
 /**
@@ -1023,15 +1134,18 @@ export function handlePlanningToggleTask(taskId: string): {
 
 /**
  * 获取 planningModel 的解析信息（供状态面板显示）。
- * 返回 resolved_model（别名解析值）和 response_model（API 返回的真实模型）。
+ * 返回 configured（用户配置值）、resolvedModel（实际解析值，发送到 HTTP body）和 responseModel（API 返回的真实模型）。
  * 要求 3：状态面板必须显示 planningModel 实际解析值和 response.model。
+ * 要求 4：三者不一致时显示明确警告。
  */
 export function getPlanningModelInfo(): {
-  aliasConfigured: string | null;
+  configured: string | null;
   resolvedModel: string | null;
   responseModel: string | null;
+  modelConsistent: boolean;
+  warning: string | null;
 } {
-  const aliasConfigured = settingsRepository.get('model_alias_planning');
+  const configured = settingsRepository.get('model_alias_planning');
   const resolvedModel = settingsRepository.getPlanningModelResolved();
 
   // 从最新的 draft/active 计划获取 response_model
@@ -1046,9 +1160,52 @@ export function getPlanningModelInfo(): {
     }
   }
 
+  // 三者一致性检查
+  let modelConsistent = true;
+  let warning: string | null = null;
+  if (!configured) {
+    modelConsistent = false;
+    warning = 'planningModel 未配置，使用默认值 deepseek-chat';
+  } else if (resolvedModel && configured !== resolvedModel) {
+    modelConsistent = false;
+    warning = `配置值 (${configured}) 与实际发送值 (${resolvedModel}) 不一致`;
+  } else if (responseModel && resolvedModel && responseModel !== resolvedModel) {
+    modelConsistent = false;
+    warning = `请求模型 (${resolvedModel}) 与 API 返回模型 (${responseModel}) 不一致`;
+  }
+
   return {
-    aliasConfigured,
+    configured,
     resolvedModel,
-    responseModel
+    responseModel,
+    modelConsistent,
+    warning
   };
+}
+
+/**
+ * 获取最近一轮 Planning Trace（供状态面板诊断显示）。
+ * 不包含 API Key 和敏感内容。
+ */
+export function getPlanningTrace(): import('../agent/graphs/planning/state').PlanningTrace | null {
+  if (!planningRunner) {
+    return null;
+  }
+  return planningRunner.getLastTrace();
+}
+
+/**
+ * 设置 planningModel 配置值（持久化到 app_settings.model_alias_planning）。
+ * 配置更新后实际 ModelGateway 会立即使用新值（agent-decide 节点每次调用都重新读取配置）。
+ */
+export function setPlanningModel(modelId: string): { ok: boolean } {
+  const trimmed = String(modelId || '').trim();
+  if (!trimmed) {
+    return { ok: false };
+  }
+  settingsRepository.set('model_alias_planning', trimmed);
+  // 同步更新 resolved（配置值即解析值，因为是真实 API model ID）
+  settingsRepository.setPlanningModelResolved(trimmed);
+  log.info('planning model configured', { fields: { modelId: trimmed } });
+  return { ok: true };
 }

@@ -51,11 +51,30 @@ export interface TimeContext {
   weekday: string;
 }
 
+/** 可注入的时钟接口，供单元测试控制时间 */
+export interface Clock {
+  now(): Date;
+}
+
+/** 系统默认时钟（使用真实时间） */
+class SystemClock implements Clock {
+  now(): Date { return new Date(); }
+}
+
+/** 固定时钟（测试用，返回构造时指定的时间） */
+export class FixedClock implements Clock {
+  private fixedDate: Date;
+  constructor(date: Date) { this.fixedDate = date; }
+  now(): Date { return new Date(this.fixedDate.getTime()); }
+}
+
 export class TimeService {
   private timezone: string;
+  private clock: Clock;
 
-  constructor(timezone?: string) {
+  constructor(timezone?: string, clock?: Clock) {
     this.timezone = timezone ?? this.detectTimezone();
+    this.clock = clock ?? new SystemClock();
   }
 
   /** 设置用户时区 */
@@ -63,9 +82,14 @@ export class TimeService {
     this.timezone = tz;
   }
 
+  /** 注入时钟（供单元测试控制时间） */
+  setClock(clock: Clock): void {
+    this.clock = clock;
+  }
+
   /** 获取当前 UTC 时间 ISO */
   nowUtc(): string {
-    return new Date().toISOString();
+    return this.clock.now().toISOString();
   }
 
   /** 检测系统时区 */
@@ -79,7 +103,7 @@ export class TimeService {
 
   /** 获取当天开始时间（UTC） */
   getDayStartUtc(date?: Date): string {
-    const d = date ?? new Date();
+    const d = date ?? this.clock.now();
     const start = new Date(d);
     start.setHours(0, 0, 0, 0);
     return start.toISOString();
@@ -87,7 +111,7 @@ export class TimeService {
 
   /** 获取当天结束时间（UTC） */
   getDayEndUtc(date?: Date): string {
-    const d = date ?? new Date();
+    const d = date ?? this.clock.now();
     const end = new Date(d);
     end.setHours(23, 59, 59, 999);
     return end.toISOString();
@@ -109,7 +133,7 @@ export class TimeService {
     }
 
     const utc = date.toISOString();
-    const now = new Date();
+    const now = this.clock.now();
     const isPast = date.getTime() < now.getTime();
 
     if (isPast && !options?.allowPast) {
@@ -184,7 +208,7 @@ export class TimeService {
    * 供模型和提醒解析器使用，确保时间基准一致。
    */
   getCurrentTimeContext(): TimeContext {
-    const date = new Date();
+    const date = this.clock.now();
     const tz = this.timezone;
     const epochMs = date.getTime();
     const utcIso = date.toISOString();
@@ -278,6 +302,6 @@ export class TimeService {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
-    }).format(new Date()).replace(/\//g, '-');
+    }).format(this.clock.now()).replace(/\//g, '-');
   }
 }

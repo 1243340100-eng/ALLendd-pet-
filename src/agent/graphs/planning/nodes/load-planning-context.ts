@@ -19,6 +19,7 @@ export function createLoadPlanningContextNode(deps: {
   userContextService: UserContextService;
 }) {
   return function loadPlanningContext(state: PlanningStateType): Partial<PlanningStateType> {
+    const phaseStartMs = Date.now();
     const timeContext = deps.timeService.getCurrentTimeContext();
     const userContext = deps.userContextService.load(state.userId);
 
@@ -37,13 +38,15 @@ export function createLoadPlanningContextNode(deps: {
       );
     }
 
+    const durationMs = Date.now() - phaseStartMs;
     log.info('planning context loaded', {
       traceId: state.traceId,
       fields: {
         hasTime: !!timeContext,
         hasUser: !!userContext,
         existingPlanStatus: existingPlan?.status ?? 'none',
-        draftVersion: currentDraft?.draftVersion ?? 0
+        draftVersion: currentDraft?.draftVersion ?? 0,
+        durationMs
       }
     });
 
@@ -52,7 +55,13 @@ export function createLoadPlanningContextNode(deps: {
       userContext,
       existingPlan,
       currentDraft,
-      draftVersion: currentDraft?.draftVersion ?? state.draftVersion
+      draftVersion: currentDraft?.draftVersion ?? state.draftVersion,
+      // Trace: 记录 load_context 阶段
+      tracePhases: [...state.tracePhases, {
+        name: 'load_planning_context',
+        success: true,
+        durationMs
+      }]
     };
   };
 }

@@ -46,6 +46,10 @@
           <input id="apiModel" type="text" autocomplete="off">
         </label>
         <label>
+          <span>计划模型 ID</span>
+          <input id="planningModelInput" type="text" autocomplete="off" placeholder="例如 deepseek-chat">
+        </label>
+        <label>
           <span>API Key</span>
           <input id="apiKey" type="password" autocomplete="off" placeholder="sk-...">
         </label>
@@ -113,6 +117,10 @@
         <section class="state-block">
           <h2>PlanningGraph 模型</h2>
           <div id="planningModelView" class="state-kv">未调用</div>
+        </section>
+        <section class="state-block">
+          <h2>Planning Trace</h2>
+          <div id="planningTraceView" class="state-kv">无记录</div>
         </section>
         <section class="state-block">
           <div class="state-block__head">

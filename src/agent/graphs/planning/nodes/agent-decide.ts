@@ -15,11 +15,15 @@ import { getDefaultAppConfig, applyUserModelAliases, resolveModelName } from '..
 import { validateAgentAction } from '../tools';
 import { settingsRepository } from '../../../../infrastructure/database/repositories/settings-repository';
 import { createLogger } from '../../../../infrastructure/logging/logger';
+import { sanitizePlanningTraceText } from '../sanitize';
 
 const log = createLogger('PlanningGraph:agentDecide');
 
-/** 确认关键词 - 用户说这些话表示确认发布 */
-const CONFIRMATION_KEYWORDS = ['就这样', '确认', '没问题', '可以了', '发布吧', '就这样吧', '确定了', 'ok', 'OK', '好的'];
+/** 确认关键词 - 用户说这些话表示确认发布。
+ * 修复 6：收紧确认条件，"好的"不再作为确认关键词，因为太容易在日常对话中出现。
+ * 只有明确的确认意图才算确认。
+ */
+const CONFIRMATION_KEYWORDS = ['就这样', '确认', '没问题', '可以了', '发布吧', '就这样吧', '确定了', 'ok', 'OK'];
 
 /** 判断用户输入是否为确认信号 */
 export function isConfirmationInput(input: string): boolean {
@@ -41,26 +45,32 @@ function buildSystemPrompt(state: PlanningStateType): string {
     ? `用户昵称：${user.displayName}`
     : '用户信息未知';
 
+  // 包含任务 ID 和 order_index，供 patch_tasks / delete_task 引用
   const draftInfo = draft && draft.tasks.length > 0
-    ? `当前草案（版本 ${draft.draftVersion}）：\n${draft.tasks.map((t, i) => `${i + 1}. ${t.start_time}-${t.end_time} ${t.content}`).join('\n')}`
+    ? `当前草案（版本 ${draft.draftVersion}）：\n${draft.tasks.map((t, i) => `${i + 1}. [id=${t.id}] ${t.start_time}-${t.end_time} ${t.content}`).join('\n')}`
     : '当前没有草案';
+
+  // 阶段提示：让模型知道当前是否处于 awaiting_confirmation
+  const phaseHint = state.awaitingConfirmation
+    ? '\n当前阶段：草案已就绪，正在等待用户确认。用户如果说"就这样/确认/没问题"等明确确认词时，可以选择 publish_plan。'
+    : '';
 
   return `你是用户的桌面宠物助手，擅长帮用户制定可执行的一日计划。
 
 当前上下文：
 ${timeInfo}
 ${userInfo}
-${draftInfo}
+${draftInfo}${phaseHint}
 
 你可以选择以下动作之一（输出严格 JSON，不要包裹在 markdown 代码块中）：
 
-1. ask_clarification - 当用户目标模糊时，询问关键问题（如具体时间、优先级）
+1. ask_clarification - 当用户目标模糊时，询问关键问题（如具体时间、优先级）。信息充分时不要追问。
 2. create_draft - 信息充分时，创建计划草案（首次或完全重建）
-3. patch_tasks - 局部修改任务（如"把第二项推迟半小时"、"下午不要太满"）
-4. delete_task - 删除单个任务（如"删除代码审查"）
-5. add_task - 添加新任务到已有草案
+3. patch_tasks - 局部修改任务（如"把第二项推迟半小时"、"下午不要太满"）。使用 patches 数组，每项含 id 字段引用任务。
+4. delete_task - 删除单个任务（如"删除代码审查"）。使用 taskId 字段引用任务 ID。
+5. add_task - 添加新任务到已有草案。新任务时间必须与现有任务不冲突。
 6. request_confirmation - 草案完成后请求用户确认
-7. publish_plan - 用户明确确认后发布计划（仅当用户说"就这样"等确认词时）
+7. publish_plan - 用户明确确认后发布计划（仅当用户说"就这样"等明确确认词时）
 
 规则：
 - 模糊目标会先询问关键问题，不直接编造时间表
@@ -68,10 +78,13 @@ ${draftInfo}
 - 用户反馈优先 patch 当前草案，不默认删除全部任务重建
 - "把第二项推迟半小时"只修改目标任务，不影响其他任务
 - "删除代码审查"不会改变其他任务
+- "下午不要排太满"等语义修改：保留主要目标和顺序，合理拉长任务间隔或缩短任务时长增加缓冲
+- 添加任务时：在现有任务之间或之后寻找不冲突的时间段；如果用户指定的时间与现有任务冲突，先解释冲突并提出调整方案（如推迟新任务或缩短时长），不要直接覆盖现有任务
 - 当前时间之后才允许安排未开始任务
 - 每个任务必须带开始时间和结束时间（HH:MM 格式）
 - 任务数量 3-6 个，时间段不重叠
 - 任务要具体可执行
+- 每轮只输出一个动作，不要在 message 中编造未写入 tasks/patches 的内容
 
 输出格式（严格 JSON）：
 {
@@ -94,21 +107,40 @@ function buildUserMessage(state: PlanningStateType): string {
 /** 创建 agent_decide 节点 */
 export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
   return async function agentDecide(state: PlanningStateType): Promise<Partial<PlanningStateType>> {
-    // 要求 12：输入框反馈、确认按钮、手动改时间都进入同一个 PlanningGraph
-    // 如果是确认信号，直接设置 userConfirmed，不调用模型
-    if (state.isConfirmation || isConfirmationInput(state.userInput)) {
-      log.info('user confirmation detected, skipping model call', {
+    // 修复 3：如果已发布，不允许再次发布（防止重复发布）
+    if (state.published) {
+      log.info('plan already published, skipping', {
         traceId: state.traceId,
-        fields: { input: state.userInput }
+        fields: { input: sanitizePlanningTraceText(state.userInput, 100) }
+      });
+      return {
+        agentAction: {
+          type: 'ask_clarification' as const,
+          clarificationQuestion: '计划已经发布了，如需修改请告诉我。',
+          message: '计划已经发布了，如需修改请告诉我。'
+        },
+        responseText: '计划已经发布了，如需修改请告诉我。',
+        shouldAskUser: true,
+        modelCallCount: state.modelCallCount
+      };
+    }
+
+    // 修复 6：收紧确认条件
+    // - "好的"不再在任何有草案的状态下自动发布
+    // - 对话确认只允许在 awaiting_confirmation 阶段生效
+    // - 确认按钮（isConfirmation=true）作为明确确认事件，可以在有草案时发布
+    if (state.isConfirmation) {
+      // 确认按钮事件：明确确认，可以在有草案时发布
+      log.info('explicit confirmation button event, skipping model call', {
+        traceId: state.traceId,
+        fields: { input: sanitizePlanningTraceText(state.userInput, 100) }
       });
 
-      // 如果有草案，标记用户确认并直接发布
       if (state.currentDraft) {
         const planId = state.currentDraft.planId;
         const { planRepository } = require('../../../../infrastructure/database/repositories/plan-repository');
         planRepository.markUserConfirmed(planId);
 
-        // 直接执行 publish_plan
         return {
           userConfirmed: true,
           agentAction: {
@@ -116,11 +148,10 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
             message: '好的，计划已发布！'
           },
           responseText: '好的，计划已发布！',
-          modelCallCount: state.modelCallCount // 不增加，未调用模型
+          modelCallCount: state.modelCallCount
         };
       }
 
-      // 没有草案却确认，返回提示
       return {
         userConfirmed: true,
         agentAction: {
@@ -134,6 +165,35 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
       };
     }
 
+    // 对话中的确认关键词：只在 awaiting_confirmation 阶段生效
+    if (isConfirmationInput(state.userInput)) {
+      if (state.awaitingConfirmation && state.currentDraft) {
+        log.info('dialog confirmation in awaiting_confirmation phase, publishing', {
+          traceId: state.traceId,
+          fields: { input: sanitizePlanningTraceText(state.userInput, 100) }
+        });
+        const planId = state.currentDraft.planId;
+        const { planRepository } = require('../../../../infrastructure/database/repositories/plan-repository');
+        planRepository.markUserConfirmed(planId);
+
+        return {
+          userConfirmed: true,
+          agentAction: {
+            type: 'publish_plan' as const,
+            message: '好的，计划已发布！'
+          },
+          responseText: '好的，计划已发布！',
+          modelCallCount: state.modelCallCount
+        };
+      }
+
+      // 不在 awaiting_confirmation 阶段的确认词：不自动发布，交给模型处理
+      log.info('confirmation keyword outside awaiting_confirmation phase, deferring to model', {
+        traceId: state.traceId,
+        fields: { input: sanitizePlanningTraceText(state.userInput, 100), awaitingConfirmation: state.awaitingConfirmation }
+      });
+    }
+
     // 调用 ModelGateway（使用 planningModel 别名）
     const systemPrompt = buildSystemPrompt(state);
     const userMessage = buildUserMessage(state);
@@ -144,6 +204,8 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
     const userAliases = settingsRepository.getModelAliases();
     const mergedConfig = applyUserModelAliases(defaultConfig, userAliases);
     const resolvedModel = resolveModelName(mergedConfig.modelAliases, MODEL_ALIAS.PLANNING);
+    // 读取用户配置的模型 ID（供 trace 记录三者一致性检查）
+    const configuredModel = settingsRepository.get('model_alias_planning') ?? '';
 
     log.info('calling planning model', {
       traceId: state.traceId,
@@ -151,16 +213,34 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
         alias: MODEL_ALIAS.PLANNING,
         resolvedModel,
         hasDraft: !!state.currentDraft,
-        inputLength: state.userInput.length
+        inputLength: state.userInput.length,
+        hasLastError: !!state.lastToolError
       }
     });
 
+    // 修复 2：如果有上一次工具错误，注入到模型上下文，禁止盲目重试
+    const modelMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: systemPrompt },
+      ...state.messages.map(m => ({ role: m.role, content: m.content }))
+    ];
+
+    if (state.lastToolError) {
+      // 注入上一次工具错误信息，让模型知道什么失败了
+      modelMessages.push({ role: 'user', content: userMessage });
+      modelMessages.push({
+        role: 'assistant',
+        content: `我尝试执行动作 ${state.lastAttemptedAction || '(unknown)'}，但失败了。错误：${state.lastToolError}`
+      });
+      modelMessages.push({
+        role: 'user',
+        content: '上一次操作失败了，请根据错误信息修正并重新选择动作。不要重复完全相同的动作。'
+      });
+    } else {
+      modelMessages.push({ role: 'user', content: userMessage });
+    }
+
     const result = await deps.modelGateway.invoke({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...state.messages.map(m => ({ role: m.role, content: m.content })),
-        { role: 'user', content: userMessage }
-      ],
+      messages: modelMessages,
       mode: 'balanced',
       alias: MODEL_ALIAS.PLANNING,
       responseFormat: 'json',
@@ -195,7 +275,17 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
         }],
         modelCallCount: state.modelCallCount + 1,
         resolvedModel,
-        responseModel
+        responseModel,
+        configuredModel,
+        // 累计 token（即使失败也累加）
+        totalInputTokens: state.totalInputTokens + (result.inputTokens ?? 0),
+        totalOutputTokens: state.totalOutputTokens + (result.outputTokens ?? 0),
+        tracePhases: [...state.tracePhases, {
+          name: 'agent_decide',
+          success: false,
+          error: result.errorCode ?? 'model call failed',
+          durationMs: result.durationMs
+        }]
       };
     }
 
@@ -234,8 +324,18 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
         modelCallCount: state.modelCallCount + 1,
         resolvedModel,
         responseModel,
+        configuredModel,
+        // 累计 token（校验失败但模型已调用，token 已消耗）
+        totalInputTokens: state.totalInputTokens + (result.inputTokens ?? 0),
+        totalOutputTokens: state.totalOutputTokens + (result.outputTokens ?? 0),
         responseText: '抱歉，我理解你的需求时遇到了问题，能再详细说明一下吗？',
-        shouldAskUser: true
+        shouldAskUser: true,
+        tracePhases: [...state.tracePhases, {
+          name: 'agent_decide',
+          success: false,
+          error: `validation: ${validation.error?.slice(0, 120)}`,
+          durationMs: result.durationMs
+        }]
       };
     }
 
@@ -252,7 +352,21 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
       awaitingConfirmation: action.type === 'request_confirmation',
       modelCallCount: state.modelCallCount + 1,
       resolvedModel,
-      responseModel
+      responseModel,
+      // Trace: 记录 token usage 和耗时
+      lastInputTokens: result.inputTokens,
+      lastOutputTokens: result.outputTokens,
+      // 累计 token（所有模型调用之和）
+      totalInputTokens: state.totalInputTokens + (result.inputTokens ?? 0),
+      totalOutputTokens: state.totalOutputTokens + (result.outputTokens ?? 0),
+      lastModelDurationMs: result.durationMs,
+      configuredModel,
+      tracePhases: [...state.tracePhases, {
+        name: 'agent_decide',
+        success: true,
+        actionType: action.type,
+        durationMs: result.durationMs
+      }]
     };
   };
 }

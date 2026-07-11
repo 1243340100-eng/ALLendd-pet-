@@ -348,3 +348,71 @@ npm.cmd run test:packaged-new-arch
 ```
 
 该测试会启动真实的 `PetFramework.exe`，使用隔离的 `--user-data-dir`，验证 LangGraph 已实际运行。架构状态保存在 `userData/architecture-status.json`，正常应为 `langgraph_ready`。
+
+## PlanningGraph 计划模式
+
+V1 之后桌宠的"计划模式"由独立的 `PlanningGraph` LangGraph Agent 驱动。这是一个真正的 Agent，可以询问澄清、生成草案、局部修改任务、请求确认并在明确确认后发布计划。
+
+### planningModel 别名配置
+
+PlanningGraph 使用的模型通过 `planningModel` 别名配置，映射到服务商真实 API model ID。配置位置：
+
+```text
+src/shared/constants/index.ts → MODEL_ALIAS.PLANNING = 'planningModel'
+```
+
+实际解析值从 `app_settings` 表读取（键名 `planningModel`），不再硬编码。如果未配置，则回退到 `balancedModel`。
+
+配置方法：在 State 面板或 `app_settings` 表中设置：
+
+```text
+planningModel = deepseek-chat   # 或其他服务商真实模型 ID
+```
+
+### 状态面板模型信息
+
+State 面板新增 `#planningModelView` 区域，显示：
+
+- `planningModel` 别名解析到的实际模型 ID（`resolvedModel`）。
+- 模型 API 返回的 `response.model`（`responseModel`，真实调用模型）。
+
+不允许显示别名冒充实际模型。如果两者不一致，以 `responseModel` 为准。
+
+### 计划模式使用流程
+
+1. 用户在输入框中描述目标（例如"帮我安排明天的学习计划"）。
+2. PlanningGraph 首先判断信息是否充分：
+   - 如果目标模糊（如"安排点事情"），Agent 会先询问关键问题，不直接编造时间表。
+   - 如果信息充分（包含时间范围、主题、约束），Agent 直接生成草案。
+3. 草案以卡片形式显示在 `#planningConversation` 区域，与对话消息同时显示。
+4. 用户可以反馈：
+   - "下午不要太满" → 按约束修改草案。
+   - "把第二项推迟半小时" → 只修改目标任务。
+   - "删除代码审查" → 只删除指定任务，不改变其他任务。
+5. 确认发布：
+   - 在对话中说"就这样"、"可以了"、"确认"等关键词。
+   - 或点击确认按钮。
+   - 两种方式产生相同发布结果。
+6. 未明确确认时，模型不能发布计划。
+
+### 计划模式独立消息历史
+
+计划模式拥有独立的消息历史（`#planningConversation`），与普通聊天历史分离。重启后可恢复规划对话、草案版本和 active 气泡。
+
+### 数据库约束
+
+- 同一时间只允许一个 active 计划（部分唯一索引 `idx_plans_active_unique_per_date`）。
+- plan status 只允许 `draft` / `active` / `completed`（CHECK 触发器）。
+- 草案版本 `draft_version` 每次 patch 递增。
+- 并发保护通过 `lock_version` 乐观锁实现。
+- 模型输出非法参数时不写入数据库（Zod 校验）。
+
+### PlanningGraph 测试
+
+运行 PlanningGraph 相关测试：
+
+```powershell
+npx tsx tests/unit/planning-graph.test.ts
+```
+
+测试覆盖 13 个场景：模糊目标询问、信息充分直接生成、约束修改、局部修改、删除任务、对话确认与按钮确认一致、未确认不能发布、未来时间校验、重启恢复、非法参数拒绝、并发唯一 active、模型显示真实值、打包版验证。

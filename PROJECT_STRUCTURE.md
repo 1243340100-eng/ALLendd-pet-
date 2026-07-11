@@ -48,7 +48,7 @@
 
 V1 之后框架运行 LangGraph 新架构，相关目录和文件：
 
-- `src/`：TypeScript 源码，包含四个 LangGraph（`ConversationGraph`、`OnboardingGraph`、`ProactiveGraph`、`ReflectionGraph`）、六大核心服务和三个内置技能。
+- `src/`：TypeScript 源码，包含五个 LangGraph（`ConversationGraph`、`OnboardingGraph`、`ProactiveGraph`、`ReflectionGraph`、`PlanningGraph`）、核心服务和内置技能。
 - `dist/`：TypeScript 编译产物，打包后实际运行的 LangGraph 架构代码。
 - `src/main/integration.ts` → `dist/main/integration.js`：新架构入口，由 `app/main.js` 通过 `require` 加载。
 - `src/main/graph-dispatcher.ts` → `dist/main/graph-dispatcher.js`：Graph 调度器，负责按消息类型路由到对应 LangGraph。
@@ -68,6 +68,54 @@ loading → langgraph_ready | initialization_failed
 - `@langchain/core` 和 `zod-to-json-schema` 必须在 `package.json` 的 `dependencies` 中，否则打包后新架构无法加载（会进入 `initialization_failed` 状态）。
 - `app.asar` 内必须包含 `node_modules/@langchain/core/`、`node_modules/@langchain/langgraph/`、`node_modules/zod-to-json-schema/`。
 - 可通过 `npm.cmd run test:packaged-new-arch` 自动验证打包产物是否包含上述依赖并实际启动新架构。
+
+## V1 PlanningGraph 计划模式
+
+V1 之后桌宠的"计划模式"由独立的 `PlanningGraph` LangGraph Agent 驱动，不再使用 `app/main.js` 中的 `callPlanningAI()` 直接 fetch + 强制 JSON 数组方案。相关目录和文件：
+
+- `src/agent/graphs/planning/`：PlanningGraph 实现。
+  - `state.ts`：`PlanningState` Annotation、`AgentAction`、`AgentActionType`（七种动作：`ask_clarification`、`create_draft`、`patch_tasks`、`delete_task`、`add_task`、`request_confirmation`、`publish_plan`）、`PlanningResponseDTO`。
+  - `graph.ts`：StateGraph 定义与 `PlanningGraphRunner`。流程：`START → load_planning_context → agent_decide → execute_tool → build_response → persist_checkpoint → END`。
+  - `tools.ts`：Zod 校验的 Planning Tools，所有写操作经此进入 repository，模型不得直接操作数据库或执行 SQL。
+  - `nodes/load-planning-context.ts`：注入 TimeService 当前时间、时区、用户资料和现有计划上下文。
+  - `nodes/agent-decide.ts`：调用 `ModelGateway`（使用 `planningModel` 别名），解析模型输出的动作 JSON。
+  - `nodes/execute-tool.ts`：执行经 Zod 校验的动作；非法参数不写入数据库。
+  - `nodes/build-response.ts`：构造 `PlanningResponseDTO`，包含 `resolvedModel` 和 `responseModel`。
+  - `nodes/persist-checkpoint.ts`：使用持久化 checkpoint 保存完整规划对话；`publish_plan` 仅在 `userConfirmed === true` 时执行，否则保留 `draft` 状态。
+  - `index.ts`：导出 `PlanningGraphRunner`。
+- `src/infrastructure/database/repositories/plan-repository.ts`：plans / plan_tasks 仓库，支持 `lock_version` 乐观锁。
+- `src/infrastructure/database/repositories/checkpoint-repository.ts`：planning checkpoint upsert（`INSERT OR REPLACE`）和消费。
+- `src/infrastructure/database/migration-runner.ts` → V5 `planning_graph_constraints`：幂等增强 plans/plan_tasks 表，不修改 V4 已建表结构，只追加列、约束和触发器。
+- `src/shared/constants/index.ts` → `MODEL_ALIAS.PLANNING = 'planningModel'`：新增可配置 planningModel 别名，映射到服务商真实 API model ID。
+- `src/infrastructure/config/config-loader.ts` / `settings-repository.ts`：从 `app_settings` 读取 `planningModel` 解析值，不再硬编码。
+- `app/main.js`：planning IPC handler 已替换为 `newArch.*` 调用，不再直接 fetch。
+- `app/preload.js`：新增 `getPlanningModelInfo` IPC。
+- `app/renderer.js`：计划模式独立消息历史，草案卡片与对话同时显示；模型信息显示实际解析值和 `response.model`。
+- `app/index.html`：`#planningConversation` 和 `#planningModelView` 元素。
+- `app/styles.css`：planning-conversation 样式。
+
+### V5 Migration 字段说明
+
+- `plans.draft_version`：草案版本号，每次 patch 递增。
+- `plans.lock_version`：乐观锁版本，防止并发覆盖。
+- `plans.resolved_model`：planningModel 别名解析到的实际模型 ID。
+- `plans.response_model`：模型 API 返回的 `response.model`（真实调用模型）。
+- `plans.user_confirmed`：用户是否明确确认发布（0/1）。
+- `plan_tasks.draft_version`：任务级草案版本。
+- 部分唯一索引 `idx_plans_active_unique_per_date`：同一日期只允许一个 active 计划。
+- 触发器 `trg_plans_status_check_insert / _update`：status 只允许 `draft` / `active` / `completed`。
+
+### PlanningGraph 设计约束
+
+- 所有 planning 请求统一经过 `ModelGateway`，不得直接 fetch。
+- 模型只能通过七种 `AgentActionType` 之一表达意图，不能直接操作 repository 或执行 SQL。
+- 所有写操作通过经过 Zod 校验的 Planning Tools。
+- `publish_plan` 必须要求明确用户确认；不能由模型擅自发布。
+- 用户反馈优先 patch 当前草案，不得默认删除全部任务重建。
+- 计划模式增加独立消息历史，草案卡片与对话同时显示。
+- 输入框反馈、确认按钮、手动改时间都进入同一个 PlanningGraph。
+- 保留 Planning Bubble 的 renderer 展示职责，不把 UI 放进 Graph。
+- 不修改已有 migration V4，使用新的幂等 V5 migration。
 
 ## 数据与隐私
 

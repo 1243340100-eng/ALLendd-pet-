@@ -70,5 +70,7 @@ contextBridge.exposeInMainWorld('petAPI', {
   toggleTaskCompletion: (taskId) => ipcRenderer.invoke('planning:toggle-task', taskId),
   getActivePlan: () => ipcRenderer.invoke('planning:get-active'),
   getPlanningModelInfo: () => ipcRenderer.invoke('planning:get-model-info'),
+  setPlanningModel: (modelId) => ipcRenderer.invoke('planning:set-model', modelId),
+  getPlanningTrace: () => ipcRenderer.invoke('planning:get-trace'),
   onPlanPublished: (callback) => ipcRenderer.on('planning:plan-published', (_event, plan) => callback(plan))
 });

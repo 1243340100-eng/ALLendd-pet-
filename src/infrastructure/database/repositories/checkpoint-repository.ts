@@ -16,6 +16,8 @@ export interface CheckpointRow {
   reason: string;
   created_at: string;
   consumed_at: string | null;
+  /** 修复 5：scope_key 用于按 userId + characterId + planningThreadId 隔离 */
+  scope_key?: string;
 }
 
 export const checkpointRepository = {
@@ -25,11 +27,15 @@ export const checkpointRepository = {
     graph_type: string;
     state_json: string;
     reason: string;
+    scope_key?: string;
   }): void {
     getDatabase().prepare(`
-      INSERT OR REPLACE INTO graph_checkpoints (id, graph_type, state_json, reason)
-      VALUES (@id, @graph_type, @state_json, @reason)
-    `).run(checkpoint);
+      INSERT OR REPLACE INTO graph_checkpoints (id, graph_type, state_json, reason, scope_key)
+      VALUES (@id, @graph_type, @state_json, @reason, @scope_key)
+    `).run({
+      ...checkpoint,
+      scope_key: checkpoint.scope_key ?? ''
+    });
   },
 
   /** 按 ID 加载 checkpoint */
@@ -40,13 +46,26 @@ export const checkpointRepository = {
     return row ?? null;
   },
 
-  /** 获取用户最新未消费的 checkpoint */
+  /** 获取用户最新未消费的 checkpoint（全局，向后兼容） */
   getActive(graphType: string): CheckpointRow | null {
     const row = getDatabase().prepare(`
       SELECT * FROM graph_checkpoints
       WHERE graph_type = ? AND consumed_at IS NULL
       ORDER BY created_at DESC LIMIT 1
     `).get(graphType) as CheckpointRow | undefined;
+    return row ?? null;
+  },
+
+  /**
+   * 修复 5：按 scope_key 获取用户最新未消费的 checkpoint。
+   * scope_key = `${userId}:${characterId}`，实现隔离。
+   */
+  getActiveByScope(graphType: string, scopeKey: string): CheckpointRow | null {
+    const row = getDatabase().prepare(`
+      SELECT * FROM graph_checkpoints
+      WHERE graph_type = ? AND scope_key = ? AND consumed_at IS NULL
+      ORDER BY created_at DESC LIMIT 1
+    `).get(graphType, scopeKey) as CheckpointRow | undefined;
     return row ?? null;
   },
 

@@ -12,6 +12,7 @@ const apiClose = document.getElementById('apiClose');
 const apiEndpoint = document.getElementById('apiEndpoint');
 const apiModel = document.getElementById('apiModel');
 const apiKey = document.getElementById('apiKey');
+const planningModelInput = document.getElementById('planningModelInput');
 const drinkReminderText = document.getElementById('drinkReminderText');
 const nightReminderText = document.getElementById('nightReminderText');
 const apiStatus = document.getElementById('apiStatus');
@@ -30,6 +31,7 @@ const chatPanelTitle = document.getElementById('chatPanelTitle');
 const planningView = document.getElementById('planningView');
 const planningConversation = document.getElementById('planningConversation');
 const planningModelView = document.getElementById('planningModelView');
+const planningTraceView = document.getElementById('planningTraceView');
 const planningDraft = document.getElementById('planningDraft');
 const planningDraftDate = document.getElementById('planningDraftDate');
 const planningDraftTasks = document.getElementById('planningDraftTasks');
@@ -745,6 +747,13 @@ async function openApiPanel() {
   apiEndpoint.value = config?.endpoint || 'https://api.deepseek.com/v1/chat/completions';
   apiModel.value = config?.model || 'deepseek-chat';
   apiKey.value = '';
+  // 加载 planningModel 配置值（从 app_settings.model_alias_planning 读取）
+  try {
+    const modelInfo = await window.petAPI?.getPlanningModelInfo?.();
+    planningModelInput.value = modelInfo?.ok?.configured || modelInfo?.info?.configured || '';
+  } catch {
+    planningModelInput.value = '';
+  }
   const reminderSettings = getReminderSettings();
   drinkReminderText.value = reminderSettings.drinkText;
   nightReminderText.value = reminderSettings.nightText;
@@ -826,6 +835,11 @@ async function saveApiSettings(clearApiKey = false) {
       apiKey: apiKey.value,
       clearApiKey
     });
+    // 同步保存 planningModel 配置（持久化到 app_settings.model_alias_planning）
+    const planningModelValue = planningModelInput.value.trim();
+    if (planningModelValue) {
+      await window.petAPI?.setPlanningModel?.(planningModelValue);
+    }
     apiKey.value = '';
     apiKey.dataset.saved = config?.hasApiKey ? 'true' : 'false';
     apiKey.placeholder = config?.hasApiKey ? t('savedApiKey') : 'sk-...';
@@ -1517,13 +1531,20 @@ async function enterPlanningMode() {
   chatInput.placeholder = '告诉我今天的目标...';
   planModeToggle?.classList.add('active');
   window.petAPI?.requestPlanningSpace?.(PLANNING_EXTRA_HEIGHT);
-  // 恢复未确认的草案（PlanningGraph 的 PlanDraft 格式：planId）
+  // 修复 5：恢复真实的规划对话历史，不显示一条虚假的通用提示代替历史
+  clearPlanningConversation();
+  if (Array.isArray(result?.messages) && result.messages.length > 0) {
+    for (const msg of result.messages) {
+      appendPlanningMessage(msg.role, msg.content);
+    }
+  }
+  // 恢复未确认的草案
   if (result?.draftPlan) {
     renderPlanDraft(result.draftPlan);
-    // 草案存在时显示已有对话提示
-    appendPlanningMessage('assistant', '继续上次的计划草案，你可以调整或确认。');
-  } else {
-    clearPlanningConversation();
+    // 如果处于 awaiting_confirmation 阶段，提示用户可以确认
+    if (result?.awaitingConfirmation) {
+      appendPlanningMessage('assistant', '草案已就绪，确认发布或继续调整。');
+    }
   }
   refreshPlanningModelInfo();
 }
@@ -1605,7 +1626,8 @@ function clearPlanningConversation() {
 
 /**
  * 刷新状态面板中 PlanningGraph 模型信息。
- * 要求 3：状态面板必须显示 planningModel 实际解析值和 response.model。
+ * 要求 3：状态面板分别显示 configured、requested、response.model。
+ * 要求 4：三者不一致时显示明确警告。
  */
 async function refreshPlanningModelInfo() {
   if (!planningModelView) return;
@@ -1616,13 +1638,54 @@ async function refreshPlanningModelInfo() {
       return;
     }
     const info = result.info;
-    setKeyValues(planningModelView, [
-      ['别名配置', info.aliasConfigured || '(默认 deepseek-chat)'],
-      ['解析模型', info.resolvedModel || '未解析'],
+    const pairs = [
+      ['已配置', info.configured || '(默认 deepseek-chat)'],
+      ['请求模型', info.resolvedModel || '未解析'],
       ['API 返回', info.responseModel || '未调用']
-    ]);
+    ];
+    if (info.warning) {
+      pairs.push(['⚠ 警告', info.warning]);
+    }
+    setKeyValues(planningModelView, pairs);
   } catch {
     setKeyValues(planningModelView, [['状态', '查询失败']]);
+  }
+  // 同步刷新 Planning Trace
+  refreshPlanningTrace().catch(() => {});
+}
+
+/**
+ * 刷新状态面板中最近一轮 Planning Trace。
+ * 只显示必要诊断信息，不含 API Key 和敏感内容。
+ */
+async function refreshPlanningTrace() {
+  if (!planningTraceView) return;
+  try {
+    const result = await window.petAPI?.getPlanningTrace?.();
+    if (!result?.ok || !result.trace) {
+      setKeyValues(planningTraceView, [['状态', '无记录']]);
+      return;
+    }
+    const t = result.trace;
+    const phasesStr = t.phases.map(p =>
+      `${p.name}(${p.success ? '✓' : '✗'})`
+    ).join(' → ');
+    setKeyValues(planningTraceView, [
+      ['traceId', t.traceId.slice(-12)],
+      ['结果', t.finalResult],
+      ['模型调用', String(t.modelCallCount)],
+      ['自动修正', String(t.autoCorrectionCount)],
+      ['输入token', String(t.inputTokens)],
+      ['输出token', String(t.outputTokens)],
+      ['总耗时', `${t.totalDurationMs}ms`],
+      ['草案版本', String(t.draftVersion)],
+      ['用户确认', t.userConfirmed ? '是' : '否'],
+      ['模型一致', t.modelConsistent ? '是' : '否'],
+      ['阶段', phasesStr],
+      ['输入摘要', t.userInputSummary || '(空)']
+    ]);
+  } catch {
+    setKeyValues(planningTraceView, [['状态', '查询失败']]);
   }
 }
 
@@ -1807,29 +1870,54 @@ function renderPlanDraft(plan) {
   planningActions.classList.remove('hidden');
 }
 
-/** 处理草案任务时间手动修改 */
+/** 处理草案任务时间手动修改（发送明确的 patch_task 事件，不调模型） */
 async function handleDraftTimeChange(taskId, field, value) {
   if (!currentDraftPlan || !currentDraftPlan.tasks) return;
   const task = currentDraftPlan.tasks.find((t) => t.id === taskId);
   if (!task) return;
   task[field] = value;
-  await saveDraftChanges();
+  // 发送明确的 patch_task 事件
+  try {
+    const result = await window.petAPI?.updateDraftPlan?.({
+      planId: currentDraftPlan.id,
+      action: 'patch_task',
+      taskId: taskId,
+      patch: { [field]: value }
+    });
+    if (result?.ok && result.plan) {
+      currentDraftPlan = result.plan;
+      renderPlanDraft(currentDraftPlan);
+    }
+  } catch (e) {
+    console.error('[planning] patch task failed:', e);
+  }
 }
 
-/** 处理关闭/删除草案任务 */
+/** 处理关闭/删除草案任务（发送明确的 delete_task 事件，数据库真正删除） */
 async function handleDraftTaskRemove(taskId) {
   if (!currentDraftPlan || !currentDraftPlan.tasks) return;
-  currentDraftPlan.tasks = currentDraftPlan.tasks.filter((t) => t.id !== taskId);
-  renderPlanDraft(currentDraftPlan);
-  await saveDraftChanges();
+  try {
+    const result = await window.petAPI?.updateDraftPlan?.({
+      planId: currentDraftPlan.id,
+      action: 'delete_task',
+      taskId: taskId
+    });
+    if (result?.ok && result.plan) {
+      currentDraftPlan = result.plan;
+      renderPlanDraft(currentDraftPlan);
+    }
+  } catch (e) {
+    console.error('[planning] delete task failed:', e);
+  }
 }
 
-/** 将本地草案修改保存到后端 */
+/** 将本地草案修改保存到后端（兼容旧的批量保存，转换为 move_task） */
 async function saveDraftChanges() {
   if (!currentDraftPlan || !currentDraftPlan.id || !currentDraftPlan.tasks) return;
   try {
     await window.petAPI?.updateDraftPlan?.({
       planId: currentDraftPlan.id,
+      action: 'move_task',
       tasks: currentDraftPlan.tasks
     });
   } catch (e) {

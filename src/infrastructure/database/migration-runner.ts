@@ -436,8 +436,29 @@ const migrationV5: MigrationFile = {
   }
 };
 
+/**
+ * V6：checkpoint 隔离 - graph_checkpoints 表添加 scope_key 列。
+ * 按 userId + characterId + planningThreadId 隔离，不再全局 getActive('planning')。
+ * 幂等：已存在则跳过。
+ */
+const migrationV6: MigrationFile = {
+  version: 6,
+  name: 'checkpoint_scope_isolation',
+  sql: '',
+  run(db: DatabaseType): void {
+    addColumnIfNotExists(db, 'graph_checkpoints', 'scope_key', 'TEXT NOT NULL DEFAULT \'\'');
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_graph_checkpoints_scope
+      ON graph_checkpoints(graph_type, scope_key, consumed_at);
+    `);
+    log.info('V6 checkpoint scope isolation applied', {
+      fields: { addedColumns: ['scope_key'], indexes: ['idx_graph_checkpoints_scope'] }
+    });
+  }
+};
+
 /** 所有已注册的 migration，按 version 升序 */
-const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5];
+const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6];
 
 /** 执行所有待执行的 migration */
 export function runMigrations(db: DatabaseType): { applied: number; currentVersion: number } {

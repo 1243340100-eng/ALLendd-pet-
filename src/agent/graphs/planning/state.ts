@@ -112,6 +112,64 @@ export interface PlanningResponseDTO {
   responseModel?: string;
 }
 
+/** Planning Trace 单个阶段记录 */
+export interface PlanningTracePhase {
+  /** 阶段名称：load_context / agent_decide / execute_tool / build_response */
+  name: string;
+  /** 是否成功 */
+  success: boolean;
+  /** 错误信息（失败时） */
+  error?: string;
+  /** 耗时（毫秒） */
+  durationMs?: number;
+  /** 动作类型（agent_decide / execute_tool 时） */
+  actionType?: string;
+  /** 工具名称（execute_tool 时） */
+  toolName?: string;
+}
+
+/** Planning Trace 结构化记录（供状态面板诊断显示） */
+export interface PlanningTrace {
+  /** 追踪 ID */
+  traceId: string;
+  /** 开始时间 ISO */
+  startedAt: string;
+  /** 完成时间 ISO */
+  completedAt: string;
+  /** 总耗时（毫秒） */
+  totalDurationMs: number;
+  /** 用户配置的模型 ID */
+  configuredModel: string;
+  /** 实际解析发送到 HTTP body 的模型 ID */
+  resolvedModel: string;
+  /** API 返回的 response.model */
+  responseModel: string;
+  /** 三者是否一致 */
+  modelConsistent: boolean;
+  /** 各阶段记录 */
+  phases: PlanningTracePhase[];
+  /** 模型调用次数 */
+  modelCallCount: number;
+  /** 最近一次输入 token */
+  inputTokens: number;
+  /** 最近一次输出 token */
+  outputTokens: number;
+  /** 累计输入 token（所有模型调用之和） */
+  totalInputTokens: number;
+  /** 累计输出 token（所有模型调用之和） */
+  totalOutputTokens: number;
+  /** 自动修正次数（工具失败后回到 agent_decide） */
+  autoCorrectionCount: number;
+  /** 草案版本 */
+  draftVersion: number;
+  /** 最终结果 */
+  finalResult: 'ok' | 'fail' | 'published';
+  /** 是否由用户明确确认 */
+  userConfirmed: boolean;
+  /** 用户输入摘要（前 80 字，脱敏） */
+  userInputSummary: string;
+}
+
 /** PlanningGraph 状态 */
 export const PlanningState = Annotation.Root({
   /** 用户 ID */
@@ -163,6 +221,13 @@ export const PlanningState = Annotation.Root({
   /** 模型调用次数 */
   modelCallCount: Annotation<number>,
 
+  /** 上一次工具执行错误（注入下次模型上下文，禁止盲目重试） */
+  lastToolError: Annotation<string>,
+  /** 上一次尝试的动作类型（避免重复相同动作） */
+  lastAttemptedAction: Annotation<string>,
+  /** 当前工具执行状态：idle/failed/succeeded。每次 execute_tool 明确覆盖。 */
+  toolExecutionStatus: Annotation<'idle' | 'failed' | 'succeeded'>,
+
   /** 收集的错误 */
   errors: Annotation<PlanningGraphError[]>,
   /** checkpoint ID */
@@ -170,8 +235,29 @@ export const PlanningState = Annotation.Root({
   /** checkpoint 原因 */
   checkpointReason: Annotation<string>,
 
+  /** Trace 累积的各阶段记录 */
+  tracePhases: Annotation<PlanningTracePhase[]>,
+  /** 最近一次模型调用的输入 token */
+  lastInputTokens: Annotation<number>,
+  /** 最近一次模型调用的输出 token */
+  lastOutputTokens: Annotation<number>,
+  /** 累计输入 token（所有模型调用之和） */
+  totalInputTokens: Annotation<number>,
+  /** 累计输出 token（所有模型调用之和） */
+  totalOutputTokens: Annotation<number>,
+  /** 最近一次模型调用的耗时（毫秒） */
+  lastModelDurationMs: Annotation<number>,
+  /** 用户配置的模型 ID（从 app_settings 读取） */
+  configuredModel: Annotation<string>,
+  /** 自动修正次数（工具失败后回到 agent_decide 的次数） */
+  autoCorrectionCount: Annotation<number>,
+  /** Graph 迭代次数（独立于 modelCallCount，所有路径的通用循环上限） */
+  graphIterationCount: Annotation<number>,
+
   /** 最终响应 DTO */
-  responseDTO: Annotation<PlanningResponseDTO | null>
+  responseDTO: Annotation<PlanningResponseDTO | null>,
+  /** 最终汇总的 Planning Trace（build_response 中设置） */
+  planningTrace: Annotation<PlanningTrace | null>
 });
 
 export type PlanningStateType = typeof PlanningState.State;
@@ -216,10 +302,25 @@ export function createInitialPlanningState(params: {
     responseModel: '',
     modelCallCount: 0,
 
+    lastToolError: '',
+    lastAttemptedAction: '',
+    toolExecutionStatus: 'idle',
+
     errors: [],
     checkpointId: '',
     checkpointReason: '',
 
-    responseDTO: null
+    tracePhases: [],
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    lastModelDurationMs: 0,
+    configuredModel: '',
+    autoCorrectionCount: 0,
+    graphIterationCount: 0,
+
+    responseDTO: null,
+    planningTrace: null
   };
 }

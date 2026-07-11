@@ -21,7 +21,7 @@ import {
 } from '../shared/constants';
 import type { ModelAlias, ModelMode, ErrorCode } from '../shared/constants';
 import type { AppConfig } from '../infrastructure/config/config-loader';
-import { pickModelAlias, resolveModelName } from '../infrastructure/config/config-loader';
+import { pickModelAlias, resolveModelName, applyUserModelAliases, getDefaultAppConfig } from '../infrastructure/config/config-loader';
 import type { SecretStore, ModelUsageRecord } from '../infrastructure/secrets/secret-store';
 import { modelUsageRepository } from '../infrastructure/database/repositories/model-usage-repository';
 import { ModelCallLimitExceededError, GraphError } from '../shared/contracts/errors';
@@ -111,12 +111,36 @@ export class ModelGateway {
   private db: DatabaseType | null;
   private turnCallCount = 0;
   private currentTurnId: string | null = null;
+  /** 可选的配置重载函数（运行时由 integration 注入，用于实时读取 app_settings 中的模型别名） */
+  private configReloader: (() => AppConfig) | null = null;
 
   constructor(options: ModelGatewayOptions) {
     this.config = options.config;
     this.secretStore = options.secretStore;
     this.fetchFn = options.fetchFn ?? ((url, opts) => fetch(url, opts));
     this.db = options.db ?? null;
+  }
+
+  /**
+   * 注入配置重载函数。
+   * 每次 invoke 前调用此函数获取最新配置，确保用户修改 planningModel 后立即生效。
+   */
+  setConfigReloader(reloader: () => AppConfig): void {
+    this.configReloader = reloader;
+  }
+
+  /** 获取当前有效配置（如果有 reloader，每次调用都重新读取） */
+  private getEffectiveConfig(): AppConfig {
+    if (this.configReloader) {
+      try {
+        return this.configReloader();
+      } catch (error) {
+        log.warn('config reloader failed, using cached config', {
+          fields: { error: (error as Error)?.message }
+        });
+      }
+    }
+    return this.config;
   }
 
   /** 开始一轮对话，重置调用计数 */
@@ -146,9 +170,12 @@ export class ModelGateway {
    * @throws ModelCallLimitExceededError 当超过单轮上限
    */
   async invoke(request: ModelRequest): Promise<ModelResult> {
+    // 获取最新配置（支持运行时 planningModel 变更立即生效）
+    const effectiveConfig = this.getEffectiveConfig();
+
     // 强制单轮调用上限
-    if (this.turnCallCount >= this.config.costBudget.maxModelCallsPerTurn) {
-      throw new ModelCallLimitExceededError(this.config.costBudget.maxModelCallsPerTurn);
+    if (this.turnCallCount >= effectiveConfig.costBudget.maxModelCallsPerTurn) {
+      throw new ModelCallLimitExceededError(effectiveConfig.costBudget.maxModelCallsPerTurn);
     }
 
     const apiConfig = this.secretStore.read();
@@ -158,12 +185,12 @@ export class ModelGateway {
 
     // 自动路由选择模型别名（或使用显式指定的别名）
     const alias = request.alias ?? pickModelAlias(request.mode, request.complexity ?? 'simple');
-    const modelName = resolveModelName(this.config.modelAliases, alias);
-    const tokenLimit = this.getTokenLimit(request.mode);
+    const modelName = resolveModelName(effectiveConfig.modelAliases, alias);
+    const tokenLimit = this.getTokenLimit(request.mode, effectiveConfig);
 
-    const maxRetries = this.config.retry.maxRetries;
-    const baseDelay = this.config.retry.baseDelayMs;
-    const limit = this.config.costBudget.maxModelCallsPerTurn;
+    const maxRetries = effectiveConfig.retry.maxRetries;
+    const baseDelay = effectiveConfig.retry.baseDelayMs;
+    const limit = effectiveConfig.costBudget.maxModelCallsPerTurn;
 
     let lastResult: ModelResult;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -177,7 +204,7 @@ export class ModelGateway {
       }
 
       const startedAt = Date.now();
-      lastResult = await this.invokeOnce(request, apiConfig, alias, modelName, tokenLimit, startedAt);
+      lastResult = await this.invokeOnce(request, apiConfig, alias, modelName, tokenLimit, startedAt, effectiveConfig);
 
       // 成功或不可重试的错误直接返回
       if (lastResult.success || !this.isRetryable(lastResult.errorCode)) {
@@ -221,7 +248,8 @@ export class ModelGateway {
     alias: ModelAlias,
     modelName: string,
     tokenLimit: { outputMaxTokens: number },
-    startedAt: number
+    startedAt: number,
+    effectiveConfig: AppConfig
   ): Promise<ModelResult> {
     // 每次 HTTP 调用（含重试）计入单轮调用配额
     this.turnCallCount++;
@@ -249,7 +277,7 @@ export class ModelGateway {
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(),
-        this.config.networkTimeoutMs
+        effectiveConfig.networkTimeoutMs
       );
 
       let response: Response;
@@ -341,10 +369,11 @@ export class ModelGateway {
     }
 
     // 配额已耗尽，不再降级
-    if (this.turnCallCount >= this.config.costBudget.maxModelCallsPerTurn) {
+    const effectiveConfig = this.getEffectiveConfig();
+    if (this.turnCallCount >= effectiveConfig.costBudget.maxModelCallsPerTurn) {
       log.warn('model call limit reached, skipping fallback', {
         traceId: request.traceId,
-        fields: { callCount: this.turnCallCount, limit: this.config.costBudget.maxModelCallsPerTurn }
+        fields: { callCount: this.turnCallCount, limit: effectiveConfig.costBudget.maxModelCallsPerTurn }
       });
       return result;
     }
@@ -391,14 +420,15 @@ export class ModelGateway {
     }
   }
 
-  private getTokenLimit(mode: ModelMode) {
+  private getTokenLimit(mode: ModelMode, effectiveConfig?: AppConfig) {
+    const cfg = effectiveConfig ?? this.getEffectiveConfig();
     switch (mode) {
       case 'low_cost':
-        return this.config.tokenLimits.lowCost;
+        return cfg.tokenLimits.lowCost;
       case 'high_quality':
-        return this.config.tokenLimits.highQuality;
+        return cfg.tokenLimits.highQuality;
       default:
-        return this.config.tokenLimits.balanced;
+        return cfg.tokenLimits.balanced;
     }
   }
 
@@ -459,7 +489,7 @@ export class ModelGateway {
   isDailyBudgetReached(): boolean {
     if (this.db) {
       return modelUsageRepository.isDailyLimitReached(
-        this.config.costBudget.maxDailyModelCalls
+        this.getEffectiveConfig().costBudget.maxDailyModelCalls
       );
     }
     return false;

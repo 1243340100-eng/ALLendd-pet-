@@ -2143,11 +2143,19 @@ ipcMain.handle('planning:start', async () => {
   if (activePlan) {
     return { ok: true, activePlan };
   }
-  const draftPlan = newArch.getDraftPlan();
-  if (draftPlan) {
-    return { ok: true, draftPlan };
+  // 修复 5：返回持久化的 messages、phase、awaitingConfirmation
+  // renderer 恢复真实计划对话，不显示一条虚假的通用提示代替历史
+  const planningState = newArch.getPlanningState();
+  if (planningState.draftPlan) {
+    return {
+      ok: true,
+      draftPlan: planningState.draftPlan,
+      messages: planningState.messages,
+      phase: planningState.phase,
+      awaitingConfirmation: planningState.awaitingConfirmation
+    };
   }
-  return { ok: true };
+  return { ok: true, messages: planningState.messages, phase: planningState.phase };
 });
 
 ipcMain.handle('planning:submit-message', async (_event, text) => {
@@ -2179,36 +2187,18 @@ ipcMain.handle('planning:confirm', async () => {
 });
 
 /**
- * 手动修改草案（时间调整等）。
+ * 手动修改草案（时间调整、删除任务、移动任务等）。
  * 要求 12：输入框反馈、确认按钮、手动改时间都进入同一个 PlanningGraph。
- * 将手动编辑作为 isManualEdit 信号送入 PlanningGraph，由 agent_decide 节点识别并 patch。
+ * 重构：renderer 发送明确的 patch_task/delete_task/move_task 事件，
+ * 不再把完整任务数组交给模型解释。UI 手动操作经过 PlanningGraph Tool 节点，但不调用模型。
+ * isManualEdit 必须实际传入并使用。
  */
 ipcMain.handle('planning:update-draft', async (_event, payload) => {
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
-  const planId = String(payload?.planId || '');
-  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
-  if (!planId) {
-    return { ok: false, reason: 'missing-plan-id' };
-  }
-  const draftPlan = newArch.getDraftPlan();
-  if (!draftPlan || draftPlan.planId !== planId) {
-    return { ok: false, reason: 'draft-not-found' };
-  }
-
-  // 将手动修改转换为 patches，通过 PlanningGraph 的 patch_tasks 工具应用
-  const patches = tasks.map(t => ({
-    id: String(t.id || ''),
-    start_time: t.start_time != null ? String(t.start_time) : undefined,
-    end_time: t.end_time != null ? String(t.end_time) : undefined,
-    order_index: typeof t.order_index === 'number' ? t.order_index : undefined
-  }));
-
-  // 构建 manual edit 指令送入 PlanningGraph
-  const manualEditInstruction = `手动修改草案：调整任务时间/顺序。patches=${JSON.stringify(patches)}`;
   try {
-    const dto = await newArch.handlePlanningMessage(manualEditInstruction, false);
+    const dto = await newArch.handlePlanningManualEdit(payload);
     return dto;
   } catch (error) {
     return { ok: false, reason: error?.message || 'manual-edit-failed' };
@@ -2239,6 +2229,28 @@ ipcMain.handle('planning:get-model-info', async () => {
     return { ok: false, reason: 'architecture-not-ready' };
   }
   return { ok: true, info: newArch.getPlanningModelInfo() };
+});
+
+/**
+ * 设置 planningModel 配置值（持久化到 app_settings.model_alias_planning）。
+ * 配置更新后实际 ModelGateway 会立即使用新值。
+ */
+ipcMain.handle('planning:set-model', async (_event, modelId) => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return newArch.setPlanningModel(String(modelId || ''));
+});
+
+/**
+ * 获取最近一轮 Planning Trace（供状态面板诊断显示）。
+ * 不包含 API Key 和敏感内容。
+ */
+ipcMain.handle('planning:get-trace', async () => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return { ok: true, trace: newArch.getPlanningTrace() };
 });
 
 /** 启动时恢复 active plan 到桌面气泡 */

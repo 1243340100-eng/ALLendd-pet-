@@ -6,7 +6,7 @@ const { detectBoundaryPressure } = require('./analyzer/boundary-engine');
 const { decidePolicy } = require('./policy/policy-controller');
 const { decidePlayfulness } = require('./policy/playfulness-gate');
 const { createDialoguePlan } = require('./planner/dialogue-planner');
-const { runPostCheck } = require('./postcheck/post-check');
+const { runPostCheck, rewriteWithPostCheck } = require('./postcheck/post-check');
 const { buildHarnessPrompt } = require('./generator/prompt-builder');
 const { MockLLMClient } = require('./generator/llm-client');
 
@@ -21,6 +21,7 @@ module.exports = {
   decidePlayfulness,
   createDialoguePlan,
   runPostCheck,
+  rewriteWithPostCheck,
   buildHarnessPrompt,
   MockLLMClient
 };

@@ -1,0 +1,1309 @@
+# Electron LangGraph 桌宠 V1 实施计划
+
+这份计划可以直接交给 Trae 执行。要求是在现有 Electron 桌宠项目上增量开发，不重写已有渲染、窗口管理和打包能力。
+
+---
+
+## 0. 已确认的产品决策
+
+### 产品形态
+
+- V1 只提供一个固定角色。
+- 底层必须按照多角色包架构设计。
+- 全局用户资料跨角色共享。
+- 角色关系记忆、共同经历、会话状态按角色隔离。
+- 默认使用 SpriteSheet。
+- 提供统一 `CharacterRenderer` 接口。
+- 预留 `Live2DRenderer`，V1 不要求完整实现 Live2D。
+
+### AI 与 Graph
+
+- 使用 LangGraph.js + TypeScript。
+- 只接入 DeepSeek，不接入其他模型提供商。
+- 支持低成本、均衡、高质量三种模式及自动路由。
+- 普通消息同步链路最多调用模型 2 次。
+- 加上异步 Reflection 后，每轮最多 3 次。
+- 表情、动作不得额外消耗一次模型调用。
+- 不开发可视化调试面板，但保留结构化日志和模型用量记录。
+
+### 功能范围
+
+V1 包含：
+
+- 角色初始化和角色包加载。
+- 普通聊天。
+- 长期记忆检索。
+- 本地提醒。
+- 今日提醒和任务列表。
+- 开机日报。
+- 每日问候。
+- 天气信息。
+- 最小 ReflectionGraph。
+- 记忆查看、编辑、删除、导出、按角色清空、全部清空。
+- 系统通知及可选声音。
+- 重试、降级和部分 checkpoint 恢复。
+
+V1 内置技能：
+
+1. `create_reminder`
+2. `list_today_schedule`
+3. `set_pet_expression`
+
+V1 不包含：
+
+- 第三方代码技能。
+- 技能市场。
+- 网络搜索。
+- Google/Outlook 日历真实接入。
+- 任意文件访问。
+- 剪贴板读取。
+- 命令执行。
+- 截图理解。
+- 语音输入、TTS、口型同步。
+- 多角色同时运行。
+- 云同步。
+- 完整 Goal/Routine 系统。
+- 开发者调试页面。
+
+---
+
+# 1. 必须采用的系统分层
+
+```text
+Electron Renderer
+├─ 桌宠窗口
+├─ 聊天 UI
+├─ 设置 UI
+├─ 记忆管理 UI
+├─ 提醒和任务 UI
+└─ CharacterRenderer
+    ├─ SpriteSheetRenderer
+    └─ Live2DRenderer 接口
+
+Electron Main Process
+├─ IPC 边界
+├─ AppEventBus
+├─ GraphDispatcher
+├─ LangGraph Runtime
+├─ PermissionGuard
+├─ ProactivePolicyEngine
+├─ 六个基础服务
+├─ 平台适配器
+└─ SQLite 数据层
+
+External
+├─ DeepSeek API
+├─ 天气 Provider
+└─ 未来外部日历 Provider
+```
+
+## 关键约束
+
+- Electron Renderer 必须保持 `contextIsolation: true`。
+- Renderer 不得直接访问数据库、文件系统、DeepSeek API 或 Node.js。
+- 所有高权限操作通过 `preload` 暴露的白名单 IPC 调用。
+- LangGraph Runtime 第一版运行在 Electron 主进程。
+- Graph 和 UI 之间只能传递结构化 DTO。
+- 如果后续主进程出现明显卡顿，再将 Agent Runtime 迁移到 Worker 或独立进程；V1 不提前增加进程复杂度。
+
+---
+
+# 2. 六个基础服务
+
+## 2.1 TimeService
+
+职责：
+
+- 获取当前时间和用户时区。
+- 将内部时间统一转换为 UTC。
+- 将显示时间转换为本地时区。
+- 校验自然语言解析产生的时间。
+- 处理“明天”“下周一”“下午三点”等结果。
+- 检测过去时间、无效时间和歧义时间。
+- 提供当天开始、结束时间。
+- 处理跨日、休眠恢复和夏令时。
+
+原则：
+
+- 模型可以提取时间候选。
+- 最终时间合法性必须由 `TimeService` 确认。
+- 数据库一律保存 UTC，同时保存创建时使用的时区。
+
+## 2.2 SchedulerService
+
+职责：
+
+- 从数据库加载待触发提醒。
+- 注册、更新、取消本地调度。
+- 应用启动及系统休眠恢复后补查错过的提醒。
+- 生成 `reminder_due` 事件。
+- 防止相同提醒重复触发。
+- 管理重复提醒的下一次执行时间。
+- 不调用模型，不直接操作 UI。
+
+必须保证：
+
+- 重启应用不会丢提醒。
+- 提醒触发基于数据库，而不是内存定时器作为唯一真相源。
+- 同一 `reminderOccurrenceId` 最多成功投递一次。
+- 全屏暂停时，提醒保持为待投递状态，退出全屏后补发。
+
+## 2.3 MemoryStore
+
+职责：
+
+- 管理全局用户档案。
+- 管理角色关系记忆。
+- 管理事件记忆。
+- 检索与当前消息相关的记忆。
+- 支持记忆 CRUD。
+- 支持导出和清空。
+- 强制执行角色隔离。
+- 保存记忆来源、置信度和更新时间。
+
+V1 可以先使用：
+
+- SQLite 结构化字段。
+- 基础全文检索或关键词检索。
+- 如已存在 Embedding 能力，可在接口后增加向量检索；不得让向量数据库成为 V1 阻塞项。
+
+## 2.4 SkillRegistry
+
+职责：
+
+- 注册内置技能。
+- 根据技能 ID 获取元数据和 handler。
+- 校验输入 Schema。
+- 声明权限等级。
+- 调用 `PermissionGuard`。
+- 记录技能执行结果。
+- 拒绝未注册技能。
+
+V1 只能加载编译进应用的技能。不得扫描用户目录并执行 `handler.js`。
+
+## 2.5 CharacterPackManager
+
+职责：
+
+- 加载角色包。
+- 校验 manifest 版本和必需资源。
+- 加载 persona、Prompt、动作映射和渲染资源。
+- 保存当前激活角色。
+- 在角色包损坏时回退到上一个可用版本。
+- 为未来多角色切换预留接口。
+
+V1 虽然只有一个角色，所有配置仍必须带 `characterId`。
+
+## 2.6 ModelGateway
+
+职责：
+
+- 统一封装 DeepSeek API。
+- 管理 API Key。
+- 支持模型别名和质量模式。
+- 处理超时、重试、限流、Token 统计和错误归一化。
+- 强制单轮调用次数上限。
+- 执行自动模型路由。
+- 提供结构化输出校验。
+- 实现同一 Provider 内的降级。
+
+不得在 Graph 节点中直接实例化 DeepSeek 客户端。
+
+---
+
+# 3. DeepSeek 模型与调用预算
+
+不要把具体模型名称散落在代码中。使用配置别名：
+
+```text
+fastModel
+balancedModel
+reasoningModel
+```
+
+映射由配置文件管理，方便未来应对 DeepSeek 模型名称变化。
+
+## 模式定义
+
+| 模式 | 路由策略 |
+|---|---|
+| 低成本 | 优先 fastModel，限制输出长度，不做额外质量检查 |
+| 均衡 | 默认 balancedModel，复杂请求可路由到 reasoningModel |
+| 高质量 | 复杂聊天使用 reasoningModel，简单路由仍使用 fastModel |
+| 自动 | 根据意图、消息长度、是否涉及工具和复杂推理选择模型 |
+
+## 强制限制
+
+一次普通对话最多：
+
+1. 路由、结构化提取：0～1 次。
+2. 主回复：1 次。
+3. 异步 Reflection：0～1 次。
+
+总计最多 3 次。
+
+以下情况不得单独调用模型：
+
+- 表情分类。
+- 动作选择。
+- 权限判断。
+- 时间合法性校验。
+- 是否全屏。
+- 是否处于勿扰时间。
+- Skill Schema 校验。
+- 最终 DTO 组装。
+
+## 表情输出方式
+
+优先要求主回复同时输出：
+
+```json
+{
+  "text": "回复内容",
+  "expression": "happy",
+  "motion": "nod"
+}
+```
+
+若结构化输出无效，则由规则映射为 `neutral/idle`。
+
+## 成本限制
+
+V1 不硬编码具体金额，因为价格可能变化。实现以下配置：
+
+- `maxModelCallsPerTurn = 3`
+- 各模式单次输入、输出 Token 上限。
+- 每日最大模型调用次数。
+- 可配置每日 Token 预算。
+- 可选价格表，用于估算每日金额。
+- 达到预算后进入低成本模式。
+- 超过硬上限后停止非必要 Reflection 和主动问候，但不得丢失本地提醒。
+
+---
+
+# 4. 统一事件协议
+
+所有入口先转换成统一事件，再由 `GraphDispatcher` 决定进入哪个 Graph。
+
+```ts
+interface AppEvent<TPayload = unknown> {
+  schemaVersion: 1;
+  eventId: string;
+  type:
+    | "chat"
+    | "startup"
+    | "reminder_due"
+    | "date_changed"
+    | "resume_from_sleep"
+    | "network_restored"
+    | "daily_greeting_due"
+    | "weather_updated"
+    | "skill_completed"
+    | "permission_resolved"
+    | "renderer_failed"
+    | "model_failed";
+  occurredAt: string;
+  timezone: string;
+  source: "renderer" | "scheduler" | "system" | "graph" | "service";
+  userId: string;
+  characterId: string;
+  sessionId?: string;
+  correlationId: string;
+  causationId?: string;
+  dedupeKey?: string;
+  priority: "low" | "normal" | "high";
+  payload: TPayload;
+}
+```
+
+## 路由规则
+
+| 事件 | 目标 |
+|---|---|
+| `chat` | ConversationGraph |
+| 首次 `startup` | OnboardingGraph |
+| 普通 `startup` | ProactiveEventGraph |
+| `reminder_due` | ProactiveEventGraph |
+| `daily_greeting_due` | ProactiveEventGraph |
+| `resume_from_sleep` | SchedulerService 补查，然后进入 ProactiveEventGraph |
+| 对话完成后的记忆候选 | ReflectionGraph |
+| `permission_resolved` | 恢复对应 checkpoint |
+| `renderer_failed` | Renderer 降级，不进入对话 Graph |
+| `model_failed` | 由 ModelGateway/当前 Graph 降级处理 |
+
+所有可重放事件必须带 `dedupeKey`。
+
+---
+
+# 5. 四个 Graph
+
+## 5.1 OnboardingGraph
+
+### 入口
+
+- 首次启动。
+- 用户主动重置角色设置。
+- 导入新的角色包。
+
+### 节点
+
+```text
+load_installation_state
+→ validate_character_pack
+→ collect_user_preferences
+→ build_persona_config
+→ configure_proactive_policy
+→ configure_model_mode
+→ save_onboarding_result
+→ activate_character
+→ finish
+```
+
+### 保存内容
+
+- 用户昵称和称呼偏好。
+- 角色 ID。
+- 结构化人格配置。
+- 回复长度。
+- 主动程度。
+- 勿扰时间。
+- 是否允许系统通知。
+- 是否播放通知声音。
+- 模型质量模式。
+- 天气城市或定位方式。
+- 记忆开关。
+
+### 验收标准
+
+- 首次启动可以完整完成配置。
+- 中途关闭应用后可以继续。
+- 角色包校验失败不会覆盖当前可用角色。
+- 用户输入不能覆盖安全规则、权限规则或工具定义。
+- 完成后生成有效的 `userId`、`characterId` 和默认会话。
+
+---
+
+## 5.2 ConversationGraph
+
+### 主要流程
+
+```text
+receive_chat
+→ load_context
+→ deterministic_intent_check
+→ route_or_extract
+→ permission_check
+→ branch
+   ├─ chat
+   ├─ create_reminder
+   ├─ list_today_schedule
+   └─ expression_request
+→ build_response
+→ persist_messages
+→ emit_response
+→ enqueue_reflection
+```
+
+### 普通聊天分支
+
+```text
+memory_gate
+→ retrieve_memory（需要时）
+→ generate_structured_response
+→ validate_response
+→ persist_messages
+→ 返回 UI
+```
+
+`memory_gate` 优先使用规则和当前上下文，无法判断时并入路由模型调用，不允许单独再消耗一次模型调用。
+
+### 创建提醒分支
+
+```text
+extract_reminder_fields
+→ TimeService 校验
+→ 判断字段是否完整
+   ├─ 不完整：写 checkpoint，询问用户
+   └─ 完整：PermissionGuard
+→ save_reminder transaction
+→ SchedulerService.register
+→ 返回成功信息
+```
+
+必要字段：
+
+- 内容。
+- 触发时间。
+- 时区。
+- 是否重复。
+- 重复规则。
+- 优先级。
+
+不得在数据库提交成功前回复“已经创建”。
+
+### 今日计划分支
+
+聚合：
+
+- 今日提醒。
+- 今日任务。
+- 已过期但未完成任务。
+
+数据库读取不需要模型。角色化表达可并入主回复，也可以使用本地模板。
+
+### 验收标准
+
+- 普通消息总模型调用不超过 3 次。
+- 创建提醒字段缺失时可以追问并恢复。
+- 明确说“提醒我……”即视为本次创建授权，不额外弹窗。
+- 角色记忆不会泄露到其他角色。
+- Graph 失败不会导致聊天窗口卡死。
+- 返回 DTO 始终包含有效的表情和动作默认值。
+
+---
+
+## 5.3 ProactiveEventGraph
+
+### 入口
+
+- 到期提醒。
+- 应用启动。
+- 每日问候触发。
+- 系统退出全屏后的待投递事件。
+- 日期跨天。
+
+### 流程
+
+```text
+receive_event
+→ load_proactive_policy
+→ deduplicate
+→ check_fullscreen
+→ check_dnd
+→ check_ignore_state
+→ check_daily_quota
+→ load_event_context
+→ compose_message
+→ choose_delivery_channel
+→ render_or_notify
+→ record_delivery
+```
+
+### 主动策略
+
+- 勿扰时间由用户配置。
+- 建议默认值：22:00～08:00，用户可关闭或修改。
+- 非提醒型主动行为每日最多 5 次。
+- 用户主动创建的到期提醒属于履约行为，不得因为问候配额而丢失。
+- 全屏游戏时暂停所有桌宠主动弹出、声音和系统通知。
+- 全屏期间到期提醒保留为待投递，退出全屏后补发。
+- 对同类问候连续忽略 2 次后，当天停止该类问候。
+- 忽略规则不影响用户创建的提醒。
+- 系统通知和声音分别设置。
+- 勿扰期间普通问候直接跳过；提醒延迟至勿扰结束，除非以后增加“紧急提醒绕过勿扰”设置。
+
+### 开机日报
+
+日报包含：
+
+- 角色问候。
+- 今日提醒。
+- 今日任务。
+- 未完成任务。
+- 天气。
+
+天气通过只读 `WeatherAdapter` 获取：
+
+- 用户可关闭。
+- 首次使用需明确联网授权。
+- 只发送城市或用户配置的位置，不默认读取精确定位。
+- 请求失败时显示“天气暂时不可用”，其余日报照常生成。
+- 缓存最近成功结果并标注更新时间。
+- 不把天气实现成通用网络搜索技能。
+
+### 验收标准
+
+- 全屏状态下不会弹窗、发声或发送系统通知。
+- 退出全屏后能补发未投递提醒。
+- 日报部分数据失败时仍可展示其余内容。
+- 连续忽略 2 次后同类问候停止。
+- 应用重启不会重复发送相同日报或提醒。
+- 每日主动次数统计在本地日期跨日时正确重置。
+
+---
+
+## 5.4 ReflectionGraph
+
+V1 只做最小异步版本。
+
+### 触发时机
+
+ConversationGraph 已经把回复返回给用户之后，再把反思任务放入后台队列。
+
+### 流程
+
+```text
+load_completed_turn
+→ extract_memory_candidates
+→ classify_memory_scope
+→ validate_candidates
+→ deduplicate_memories
+→ upsert_memory
+→ update_user_profile_candidates
+→ record_result
+```
+
+### 允许写入
+
+- 稳定用户偏好。
+- 用户明确提供的身份信息。
+- 长期项目。
+- 有后续价值的重要事件。
+- 用户与当前角色的共同经历。
+- 角色专属称呼和关系信息。
+
+### 禁止自动写入
+
+- 密码、Token、API Key。
+- 银行卡和完整证件号码。
+- 一次性验证码。
+- 未经确认的模型推测。
+- 普通寒暄。
+- 临时情绪被误判为稳定人格。
+- 其他角色的关系记忆。
+
+### 验收标准
+
+- Reflection 失败不影响聊天。
+- 失败任务可后台重试。
+- 相同事实不会无限生成重复记忆。
+- 每条记忆可追溯到来源消息。
+- 用户可以查看、编辑、删除和导出。
+- 清空角色记忆不会删除全局用户档案。
+- 清空全部个人数据需要二次确认。
+
+---
+
+# 6. State 设计
+
+不要把所有 Graph 强行塞进一个不断膨胀的 State。使用基础状态加 Graph 专属状态。
+
+```ts
+interface BaseGraphState {
+  event: AppEvent;
+  userId: string;
+  characterId: string;
+  sessionId?: string;
+
+  persona?: PersonaConfig;
+  modelMode: "low_cost" | "balanced" | "high_quality" | "auto";
+
+  traceId: string;
+  startedAt: string;
+  errors: GraphError[];
+  modelCallCount: number;
+
+  pendingPermission?: PendingPermission;
+  checkpointReason?: string;
+}
+```
+
+```ts
+interface ConversationState extends BaseGraphState {
+  userInput: string;
+  messages: ChatMessage[];
+
+  intent?: "chat" | "create_reminder" | "list_schedule" | "expression";
+  retrievedMemories: MemoryRecord[];
+
+  reminderDraft?: ReminderDraft;
+  missingFields: string[];
+
+  selectedSkillId?: string;
+  skillResult?: unknown;
+
+  responseText?: string;
+  expression?: string;
+  motion?: string;
+
+  reflectionPayload?: ReflectionPayload;
+}
+```
+
+```ts
+interface ProactiveState extends BaseGraphState {
+  proactiveType: "reminder" | "startup_digest" | "daily_greeting";
+  policy: ProactivePolicy;
+  fullscreen: boolean;
+  inDnd: boolean;
+  ignoredCount: number;
+  dailyCount: number;
+
+  scheduleItems: ScheduleItem[];
+  weather?: WeatherSnapshot;
+
+  delivery:
+    | "pet_bubble"
+    | "system_notification"
+    | "deferred"
+    | "suppressed";
+}
+```
+
+State 中禁止保存：
+
+- DeepSeek API Key。
+- 完整数据库连接。
+- Renderer 实例。
+- Electron BrowserWindow 实例。
+- 任意可执行函数。
+- 无限制增长的完整历史消息。
+
+---
+
+# 7. 建议目录结构
+
+Trae 应先适配现有项目结构，不要机械覆盖。目标模块边界如下：
+
+```text
+src/
+  main/
+    bootstrap/
+    ipc/
+    windows/
+    lifecycle/
+    fullscreen/
+
+  preload/
+    index.ts
+    api-contract.ts
+
+  renderer/
+    chat/
+    onboarding/
+    settings/
+    memories/
+    reminders/
+    character/
+      CharacterRenderer.ts
+      SpriteSheetRenderer.ts
+      Live2DRenderer.ts
+      PlaceholderRenderer.ts
+
+  shared/
+    contracts/
+    dto/
+    schemas/
+    constants/
+
+  agent/
+    dispatcher/
+      GraphDispatcher.ts
+      event-routing.ts
+
+    graphs/
+      onboarding/
+        graph.ts
+        state.ts
+        nodes/
+      conversation/
+        graph.ts
+        state.ts
+        nodes/
+      proactive/
+        graph.ts
+        state.ts
+        nodes/
+      reflection/
+        graph.ts
+        state.ts
+        nodes/
+
+    prompts/
+      system/
+      routing/
+      conversation/
+      reflection/
+
+    checkpoints/
+    policies/
+
+  domain/
+    users/
+    characters/
+    memories/
+    reminders/
+    tasks/
+    permissions/
+    proactive/
+    events/
+
+  services/
+    TimeService.ts
+    SchedulerService.ts
+    MemoryStore.ts
+    SkillRegistry.ts
+    CharacterPackManager.ts
+    ModelGateway.ts
+
+  skills/
+    create-reminder/
+    list-today-schedule/
+    set-pet-expression/
+
+  adapters/
+    deepseek/
+    database/
+    weather/
+    notifications/
+    sound/
+    fullscreen/
+    calendar/
+      ExternalCalendarAdapter.ts
+
+  infrastructure/
+    database/
+      migrations/
+      repositories/
+      transactions/
+    logging/
+    queue/
+    config/
+    secrets/
+
+character-packs/
+  default-character/
+    manifest.json
+    persona.json
+    prompt.md
+    motion-map.json
+    spritesheet/
+    live2d/
+
+tests/
+  unit/
+  graph/
+  integration/
+  electron/
+  fixtures/
+```
+
+---
+
+# 8. 本地数据模型
+
+推荐使用 SQLite 和版本化 migration。若现有项目已有可靠数据库，应复用并建立同等表结构。
+
+## 核心表
+
+| 表 | 用途 |
+|---|---|
+| `app_settings` | 全局设置、模型模式、通知设置 |
+| `users` | 本地用户身份 |
+| `characters` | 已安装角色及当前版本 |
+| `character_packs` | 角色包路径、版本、校验状态 |
+| `user_profiles` | 跨角色共享的用户档案 |
+| `character_relationships` | 角色专属关系状态 |
+| `memories` | 长期记忆 |
+| `sessions` | 会话状态 |
+| `messages` | 对话消息 |
+| `reminders` | 本地提醒 |
+| `reminder_occurrences` | 每次触发实例和防重复状态 |
+| `tasks` | 今日任务和未完成任务 |
+| `proactive_policies` | 勿扰、次数、声音等策略 |
+| `proactive_deliveries` | 主动行为历史及忽略状态 |
+| `permissions` | 用户授权记录 |
+| `graph_checkpoints` | 可恢复 Graph 状态 |
+| `reflection_jobs` | 异步反思队列 |
+| `model_usage` | 调用次数、Token、耗时和错误 |
+| `skill_executions` | 技能执行审计 |
+| `event_outbox` | 可靠事件投递和去重 |
+
+## `memories` 关键字段
+
+```text
+id
+user_id
+character_id nullable
+scope: global | character
+type: profile | preference | event | relationship | project
+content
+structured_data
+confidence
+source_message_id
+created_at
+updated_at
+deleted_at
+```
+
+规则：
+
+- `global` 记忆的 `character_id` 必须为空。
+- `character` 记忆必须包含 `character_id`。
+- 普通删除优先软删除，用户执行永久清除时再物理删除。
+- 导出格式使用带版本号的 JSON。
+- 导出文件不得包含 API Key、内部日志或 checkpoint。
+
+## 提醒和任务分离
+
+`Reminder`：
+
+- 负责在确定时间触发。
+- 支持一次性或重复。
+- 有 `next_trigger_at` 和投递状态。
+
+`Task`：
+
+- 有待办、完成状态和截止时间。
+- V1 主要用于日报展示。
+- 不把 Task 隐式转换成 Reminder。
+
+Goal 和 Routine 只保留未来接口，不在 V1 实现完整业务。
+
+---
+
+# 9. 角色包规范
+
+```text
+character-packs/
+  default-character/
+    manifest.json
+    persona.json
+    prompt.md
+    motion-map.json
+    spritesheet/
+      atlas.png
+      spritesheet.json
+    live2d/
+      ...
+```
+
+## `manifest.json` 必需内容
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "default-character",
+  "name": "Default Character",
+  "version": "1.0.0",
+  "persona": "persona.json",
+  "prompt": "prompt.md",
+  "motionMap": "motion-map.json",
+  "renderers": {
+    "default": "spritesheet",
+    "spritesheet": {
+      "atlas": "spritesheet/atlas.png",
+      "metadata": "spritesheet/spritesheet.json"
+    },
+    "live2d": null
+  }
+}
+```
+
+## Persona 分层
+
+最终系统提示词按以下顺序构造：
+
+```text
+不可覆盖的安全规则
+→ 权限和数据边界
+→ 工具协议
+→ 输出 Schema
+→ 角色包 Persona
+→ 用户允许修改的角色补充
+→ 当前用户档案
+→ 相关角色记忆
+→ 当前会话上下文
+```
+
+用户允许修改：
+
+- 角色身份补充。
+- 性格。
+- 说话风格。
+- 对用户的称呼。
+- 回复长度。
+- 主动程度。
+- 禁止话题。
+- 示例对话。
+
+用户不得覆盖：
+
+- 权限规则。
+- 安全规则。
+- 工具定义。
+- 数据隔离规则。
+- 系统输出格式。
+- API Key 管理方式。
+
+---
+
+# 10. 权限矩阵
+
+| 操作 | 默认策略 |
+|---|---|
+| 读取当前角色配置 | 自动允许 |
+| 读取本地提醒和任务 | 自动允许 |
+| 检索当前用户、当前角色记忆 | 自动允许 |
+| 查看自己的记忆 | 自动允许 |
+| 编辑、删除单条记忆 | 用户在 UI 中明确操作即授权 |
+| 导出个人数据 | 每次确认导出路径 |
+| 清空角色记忆 | 二次确认 |
+| 清空全部个人数据 | 二次确认并明确影响范围 |
+| 聊天中明确说“提醒我……” | 视为本次创建授权 |
+| 系统主动建议创建提醒 | 必须确认 |
+| 修改、删除提醒 | 每次确认 |
+| 系统通知 | 首次授权，可在设置中撤销 |
+| 通知声音 | 独立设置开关 |
+| 天气网络访问 | 首次授权，可撤销 |
+| 外部日历 | V1 不接入，只保留接口 |
+| 网络搜索 | V1 禁止 |
+| 读取剪贴板 | V1 禁止 |
+| 任意文件读取 | V1 禁止 |
+| 任意目录访问 | 禁止 |
+| 执行命令或代码 | 禁止 |
+| 导入带代码技能 | 禁止 |
+
+PermissionGuard 必须位于 Graph 与技能 handler 之间，不能只依赖 Prompt。
+
+---
+
+# 11. 失败与降级矩阵
+
+| 失败点 | 重试 | 降级行为 |
+|---|---:|---|
+| 路由模型失败 | 1 次 | 按普通聊天处理 |
+| 高质量模型失败 | 1 次 | 降级到均衡模型别名 |
+| 均衡模型失败 | 1 次 | 降级到低成本模型别名 |
+| DeepSeek 整体不可用 | 不循环重试 | 返回本地友好提示，提醒和任务功能保持可用 |
+| 模型结构化输出无效 | 1 次修复或本地解析 | 文本保留，表情使用 `neutral` |
+| 记忆检索失败 | 后台记录 | 无记忆继续回复 |
+| Reflection 失败 | 后台指数退避 | 不影响用户已收到的回复 |
+| 记忆写入失败 | 有限重试 | 记录失败，不谎称已保存 |
+| 提醒解析失败 | 不猜测 | 向用户询问缺失字段 |
+| 提醒数据库写入失败 | 事务回滚 | 明确告知创建失败 |
+| Scheduler 注册失败 | 重建调度 | 数据库提醒保持有效，启动时重扫 |
+| 重复 reminder 事件 | 不重试 | 依据 occurrence/dedupeKey 丢弃 |
+| 天气请求失败 | 1 次 | 日报显示天气不可用 |
+| 天气缓存过期 | 后台刷新 | 可显示最近结果并标注更新时间 |
+| 系统通知失败 | 不无限重试 | 回退到桌宠气泡 |
+| 声音播放失败 | 不阻塞 | 静默通知 |
+| SpriteSheet 加载失败 | 1 次 | `PlaceholderRenderer` |
+| Live2D 加载失败 | 1 次 | 回退 SpriteSheet |
+| 角色包校验失败 | 不激活 | 保留上一个有效角色包 |
+| checkpoint 损坏 | 不自动猜测 | 清理该 checkpoint，重新向用户确认 |
+| 全屏检测失败 | 不主动打扰 | 抑制非必要问候，提醒保留待投递 |
+| 应用休眠错过提醒 | 启动/恢复重扫 | 按补发策略投递 |
+| 权限被拒绝 | 不绕过 | 解释未执行原因并提供设置入口 |
+
+---
+
+# 12. 开发阶段与验收标准
+
+## 阶段 0：项目审计与基线
+
+任务：
+
+- 读取现有 Electron 项目结构。
+- 确认 Electron、Node、TypeScript、打包器和状态管理版本。
+- 找到窗口、托盘、SpriteSheet、IPC、配置和持久化代码。
+- 记录已有行为，避免重构破坏。
+- 建立当前版本的启动、打包和基础冒烟测试。
+- 输出架构决策记录，不立即重写目录。
+
+验收：
+
+- 开发模式可启动。
+- 当前安装包仍可构建。
+- 已明确主进程、preload、renderer 入口。
+- 已列出复用模块和需要迁移的模块。
+- 未删除已有用户资源。
+
+## 阶段 1：TypeScript 边界和基础契约
+
+任务：
+
+- 建立 shared DTO、Zod Schema 和错误类型。
+- 建立安全 IPC 白名单。
+- 定义 `AppEvent`、Graph 输出、Renderer 输出。
+- 建立配置加载及密钥存储接口。
+- 接入结构化日志。
+
+验收：
+
+- Renderer 无法直接访问 Node。
+- 所有 IPC 输入经过 Schema 校验。
+- 非法事件和未知事件不会让主进程崩溃。
+- 日志不包含 API Key、完整 Prompt 或隐私记忆正文。
+
+## 阶段 2：SQLite 数据层和六个服务骨架
+
+任务：
+
+- 建立 migration。
+- 实现 repositories 和事务边界。
+- 完成六个服务接口。
+- 实现 DeepSeek ModelGateway。
+- 实现本地事件 outbox 和 reflection queue。
+
+验收：
+
+- 数据库可从空库自动初始化。
+- migration 可重复验证。
+- 应用重启后设置、提醒和会话仍存在。
+- ModelGateway 能统计调用次数、Token、耗时。
+- 单轮第四次模型调用会被拒绝。
+
+## 阶段 3：角色包与 Renderer
+
+任务：
+
+- 将现有固定角色整理为默认角色包。
+- 实现 CharacterPackManager。
+- 实现 `CharacterRenderer`。
+- 适配现有 SpriteSheetRenderer。
+- 建立 Live2DRenderer 空实现或接口实现。
+- 加入 PlaceholderRenderer。
+
+验收：
+
+- 默认角色从角色包加载。
+- Prompt、Persona、资源不再散落硬编码。
+- SpriteSheet 失败时显示占位角色。
+- Renderer 切换不影响 Graph。
+- 无效角色包不能覆盖有效角色。
+
+## 阶段 4：OnboardingGraph
+
+任务：
+
+- 实现首次启动判断。
+- 完成角色、称呼、模型模式、勿扰时间、声音、天气等配置。
+- 保存 checkpoint。
+- 完成设置修改入口。
+
+验收：
+
+- 首次配置可中断恢复。
+- 完成后不再重复进入向导。
+- 设置可以修改。
+- 用户自定义 Prompt 无法覆盖系统安全层。
+
+## 阶段 5：ConversationGraph 和三个内置技能
+
+任务：
+
+- 实现路由和普通聊天。
+- 接入记忆检索。
+- 实现结构化回复和表情动作。
+- 实现提醒字段提取、追问、保存和调度。
+- 实现三个技能及 SkillRegistry。
+- 接入权限守卫。
+
+验收：
+
+- 普通聊天成功。
+- 需要历史信息时能检索相关记忆。
+- 创建提醒可以处理缺失日期或时间。
+- 创建失败不会回复成功。
+- 未注册技能无法调用。
+- 普通消息总调用次数不超过 3。
+
+## 阶段 6：Scheduler 和 ProactiveEventGraph
+
+任务：
+
+- 实现持久化提醒调度。
+- 实现启动重扫和休眠恢复。
+- 实现开机日报。
+- 实现每日问候。
+- 实现全屏暂停、勿扰、配额和忽略策略。
+- 实现系统通知和声音开关。
+- 实现天气适配器与缓存。
+
+验收：
+
+- 重启后提醒仍能触发。
+- 全屏游戏时完全暂停主动投递。
+- 退出全屏后补发提醒。
+- 日报包含五类已确认内容。
+- 天气失败不影响其余日报。
+- 连续忽略 2 次后停止同类问候。
+
+## 阶段 7：ReflectionGraph 和记忆管理
+
+任务：
+
+- 实现异步 Reflection。
+- 实现候选去重和作用域分类。
+- 完成记忆管理 UI。
+- 完成 JSON 导出和清空。
+- 增加敏感信息过滤。
+
+验收：
+
+- 用户先收到回复，Reflection 后台执行。
+- 记忆可查看、编辑、删除和导出。
+- 全局记忆和角色记忆清晰标识。
+- 按角色清空不会误删全局档案。
+- 敏感内容不会自动进入长期记忆。
+
+## 阶段 8：恢复、压力测试和发布
+
+任务：
+
+- 完成重试、超时、降级。
+- 完成部分 checkpoint 恢复。
+- 进行故障注入测试。
+- 检查打包后的数据库、角色包和原生依赖路径。
+- 完成用户数据迁移和备份策略。
+- 编写安装、隐私、权限和恢复说明。
+
+验收：
+
+- DeepSeek 断网时本地提醒仍可使用。
+- 数据库异常不会产生虚假成功。
+- 安装包在干净 Windows 环境启动。
+- 升级不会覆盖用户数据。
+- 无严重日志泄密。
+- 所有测试清单通过后才标记 V1 完成。
+
+---
+
+# 13. 测试清单
+
+## 单元测试
+
+- TimeService 的时区、跨日和过去时间。
+- Scheduler 的注册、取消、重启恢复和去重。
+- PermissionGuard 各权限等级。
+- CharacterPack manifest 校验。
+- Persona Prompt 分层不可覆盖。
+- ModelGateway 超时、重试和调用上限。
+- MemoryStore 角色隔离。
+- 主动次数、勿扰和忽略计数。
+- 表情动作 fallback。
+- 天气缓存过期逻辑。
+
+## Graph 测试
+
+- 普通聊天。
+- 需要记忆和不需要记忆的聊天。
+- 创建完整提醒。
+- 提醒缺少日期。
+- 提醒缺少时间。
+- 用户拒绝确认。
+- Graph 从 checkpoint 恢复。
+- 路由失败后进入普通聊天。
+- Reflection 失败但主回复成功。
+- 主动事件被全屏策略推迟。
+- 日报部分数据不可用。
+
+## 集成测试
+
+- ConversationGraph → SkillRegistry → ReminderRepository。
+- ReminderRepository → SchedulerService → ProactiveEventGraph。
+- ConversationGraph → Reflection queue → MemoryStore。
+- CharacterPackManager → Renderer。
+- ModelGateway → DeepSeek Mock Server。
+- WeatherAdapter → 缓存 → 日报。
+- PermissionGuard → IPC 确认 → checkpoint 恢复。
+
+## Electron E2E
+
+- 首次安装和 Onboarding。
+- 应用关闭后重新打开。
+- 托盘驻留时提醒触发。
+- 全屏应用运行时不弹出。
+- 退出全屏后补发。
+- 系统通知关闭时只显示桌宠气泡。
+- 声音关闭时静默。
+- SpriteSheet 资源损坏时回退占位角色。
+- 无网络启动。
+- 数据导出和清空确认。
+
+## 安全测试
+
+- Renderer 注入未知 IPC。
+- 用户 Prompt 尝试覆盖安全规则。
+- 模型请求未注册技能。
+- 技能输入包含目录穿越路径。
+- 角色包 manifest 指向包目录之外。
+- 日志中搜索 API Key。
+- 角色 A 请求角色 B 的记忆。
+- 导出文件包含内部密钥或 checkpoint。
+- 非法结构化模型输出。
+- 伪造 `permission_resolved` 事件。
+
+## 性能和成本测试
+
+- 普通聊天最多 3 次模型调用。
+- Reflection 队列不会阻塞 UI。
+- 最近消息不会无限增长。
+- 大量历史消息下检索时间可控。
+- 一千条提醒启动重扫不会卡死窗口。
+- 一百条记忆的查看、编辑和删除正常。
+- 每日预算达到阈值后正确降级。
+
+---
+
+# 14. 禁止事项
+
+Trae 在实现期间不得：
+
+- 重写整个现有 Electron 桌宠项目。
+- 把 LangGraph 做成永不结束的定时循环。
+- 依靠 Graph 自身保持运行来实现闹钟。
+- 在 Renderer 中保存 DeepSeek API Key。
+- 让 Graph 节点直接操作 BrowserWindow。
+- 让模型决定权限是否通过。
+- 让模型直接写数据库。
+- 在数据库提交前报告技能执行成功。
+- 为表情和动作额外调用一次模型。
+- 将 Reflection 放在用户回复的同步关键路径。
+- 把提醒当作普通长期记忆保存。
+- 混用本地时间和 UTC。
+- 让不同角色默认共享关系记忆。
+- 执行用户导入的 JavaScript、Python 或命令。
+- 开放任意文件或目录访问。
+- 将外部日历、搜索、语音、Goal 系统塞入 V1。
+- 在没有 migration 的情况下直接修改生产数据库结构。
+- 删除或覆盖用户现有角色资源、聊天记录和设置。
+- 为了调试而关闭 Electron 的安全隔离。
+- 因天气、模型或 Renderer 失败导致整个应用无法启动。
+- 添加开发者调试面板；只保留结构化日志和必要审计记录。
+
+---
+
+# 15. Trae 的交付要求
+
+每个阶段完成后，Trae 都应提交：
+
+1. 本阶段修改文件列表。
+2. 数据库 migration 说明。
+3. 新增配置项和默认值。
+4. 自动化测试结果。
+5. 手动验收步骤。
+6. 已知限制。
+7. 下一阶段依赖。
+8. 对现有功能兼容性的说明。
+
+最终 V1 只有在以下主链全部通过时才算完成：
+
+```text
+首次配置
+→ 加载默认角色包
+→ 普通聊天
+→ 检索角色记忆
+→ 创建本地提醒
+→ 重启应用
+→ 准时触发提醒
+→ 全屏期间暂停
+→ 退出全屏后补发
+→ 生成开机日报
+→ 异步提取记忆
+→ 用户查看、编辑、导出和清空记忆
+→ DeepSeek 失败时本地能力继续工作
+```
+
+Trae 应严格按阶段推进：先完成项目审计和基础边界，再开始 Graph 节点实现；不得一开始同时修改渲染、数据库、提醒、记忆和模型调用链。

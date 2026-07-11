@@ -2,7 +2,7 @@
 
 这份文档用于新开窗口或交接给别人时，生成一个可接入本项目 conversation harness 的人格 profile。
 
-v1.4.1 之后请注意：**人格 profile 不是运行时人格切换功能**。它是打包前角色配置的一部分，用来辅助固定角色的对话节奏、回复深度、边界表达和玩笑频率。真正决定“这个桌宠是谁”的，是 `app/config/pet-profile.js` 里的 `corePrompt` 和 `roleFidelity`。
+v1.6.0 之后请注意：**人格 profile 不是运行时人格切换功能**。它是打包前角色配置的一部分，用来辅助固定角色的对话节奏、回复深度、边界表达和玩笑频率。真正决定“这个桌宠是谁”的，是 `app/config/pet-profile.js` 里的 `corePrompt` 和 `roleFidelity`。
 
 ## 在项目里的作用
 
@@ -200,6 +200,13 @@ module.exports = {
 - 不要在这里写角色身份、背景故事或世界观。
 - 角色身份必须写入 `pet-profile.js` 的 `corePrompt` 和 `roleFidelity`。
 
+## v1.5.0 能力边界
+
+- 人格 profile 不能决定是否写入或召回记忆，只能影响最终回复风格。
+- “还记得 / 继续刚才”等召回逻辑位于通用 Prompt/记忆服务，不写进 personality profile。
+- personality profile 不能增加 Safe Shell 命令、扩大工作目录、关闭确认或启用写入/提权能力。
+- 角色如果表现出“会操作电脑”的设定，也只能描述框架真实提供的固定只读能力。
+
 ## 生成新 profile 的推荐流程
 
 当用户描述想要的角色时，先拆成两部分：
@@ -225,7 +232,7 @@ module.exports = {
 可以把下面这段发给新窗口：
 
 ```text
-请根据以下用户需求，生成一个适用于 roxy-electron-pet-framework v1.4.1 的 conversation harness personality profile。
+请根据以下用户需求，生成一个适用于 roxy-electron-pet-framework v1.6.0 的 conversation harness personality profile。
 
 注意：
 1. 这个 profile 不是完整角色人设，也不是运行时人格切换功能。
@@ -260,3 +267,8 @@ node --check .\app\config\pet-profile.js
 D:\Documents\展示项目内容\roxy-electron-pet-framework\release\win-unpacked\PetFramework.exe
 ```
 
+## v1.6.0 表情能力边界
+
+- personality profile 只能影响回复风格，不能选择 spritesheet 行号、开启 `responseEmotion` 或修改表情分类标签。
+- 表情资产和动画行必须在 `app/config/pet-profile.js` 中于打包前固定。
+- 表情分类发生在角色回复生成之后，不会改写回复、写入记忆或改变 conversation harness 策略。

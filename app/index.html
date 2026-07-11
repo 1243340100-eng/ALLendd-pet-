@@ -13,6 +13,9 @@
         桌宠框架测试版<br>
         请替换动画资产和角色配置
       </div>
+      <div id="reminderStack" class="reminder-stack" aria-label="提醒堆叠">
+        <div id="reminderBubble" class="reminder-bubble hidden" role="alert" aria-label="提醒"></div>
+      </div>
       <div id="pet" class="pet" role="img" aria-label="Pet"></div>
       <div id="controls" class="controls">
         <button id="apiSettings" type="button">接口</button>
@@ -72,6 +75,21 @@
         </div>
         <div id="stateStatus" class="state-status">加载中...</div>
         <section class="state-block">
+          <h2>Agent 架构状态</h2>
+          <div id="archStatusView" class="state-kv">加载中...</div>
+        </section>
+        <section class="state-block">
+          <div class="state-block__head">
+            <h2>提醒与日程</h2>
+            <button id="refreshReminders" type="button">刷新</button>
+          </div>
+          <div id="reminderList" class="memory-list"></div>
+          <div class="state-block__head" style="margin-top:8px">
+            <button id="triggerDailyDigest" type="button">生成今日摘要</button>
+            <button id="triggerReminderCheck" type="button">检查到期提醒</button>
+          </div>
+        </section>
+        <section class="state-block">
           <h2>好感度</h2>
           <div id="affectionView" class="state-kv"></div>
         </section>
@@ -81,32 +99,108 @@
         </section>
         <section class="state-block">
           <div class="state-block__head">
-            <h2>用户记忆</h2>
+            <h2>用户记忆 <small style="font-weight:normal;color:#888">SQLite</small></h2>
             <button id="clearUserMemory" type="button">清空</button>
           </div>
           <div id="userMemoryList" class="memory-list"></div>
         </section>
         <section class="state-block">
           <div class="state-block__head">
-            <h2>长期记忆</h2>
+            <h2>长期记忆 <small style="font-weight:normal;color:#888">SQLite</small></h2>
             <button id="clearLongTermMemory" type="button">清空</button>
           </div>
           <div id="longTermMemoryList" class="memory-list"></div>
         </section>
         <section class="state-block">
           <div class="state-block__head">
-            <h2>短期记忆</h2>
+            <h2>短期记忆 <small style="font-weight:normal;color:#888">SQLite</small></h2>
             <button id="clearShortTermMemory" type="button">清空</button>
             <button id="clearExpiredShortTerm" type="button">清理过期</button>
           </div>
           <p id="shortTermMemoryNote" class="memory-note">
-            短期记忆用于临时上下文，普通聊天不会自动保存到这里。
+            短期记忆用于临时上下文，普通聊天不会自动保存到这里。数据存储于 SQLite。
           </p>
           <div id="shortTermMemoryList" class="memory-list"></div>
         </section>
         <div class="state-danger">
+          <button id="exportMemory" type="button">导出个人数据</button>
           <button id="clearAllMemory" type="button">清空全部记忆</button>
         </div>
+      </section>
+      <section id="onboardingPanel" class="state-panel onboarding-panel hidden" aria-label="首次配置">
+        <div class="state-panel__head onboarding-panel__head">
+          <div class="onboarding-panel__title">
+            <span class="onboarding-panel__icon" aria-hidden="true">✨</span>
+            <strong>首次配置</strong>
+          </div>
+        </div>
+        <div id="onboardingMessage" class="state-status onboarding-panel__lead"></div>
+        <form id="onboardingForm" class="state-block onboarding-form">
+          <div class="onboarding-form__section">
+            <label class="onboarding-form__field">
+              <span>昵称</span>
+              <input id="obNickname" type="text" placeholder="你的名字" />
+            </label>
+            <label class="onboarding-form__field">
+              <span>称呼</span>
+              <input id="obPreferredName" type="text" placeholder="角色对你的称呼" />
+            </label>
+          </div>
+          <div class="onboarding-form__section onboarding-form__section--inline">
+            <label class="onboarding-form__field">
+              <span>回复长度</span>
+              <select id="obReplyLength">
+                <option value="short">简短</option>
+                <option value="medium">适中</option>
+                <option value="long">详细</option>
+              </select>
+            </label>
+            <label class="onboarding-form__field">
+              <span>主动程度</span>
+              <select id="obProactiveLevel">
+                <option value="low">低</option>
+                <option value="medium" selected>中</option>
+                <option value="high">高</option>
+              </select>
+            </label>
+          </div>
+          <div class="onboarding-form__section">
+            <label class="onboarding-form__field">
+              <span>天气城市</span>
+              <input id="obWeatherCity" type="text" placeholder="如 上海" />
+            </label>
+          </div>
+          <div class="onboarding-form__section onboarding-form__toggles">
+            <label class="onboarding-form__toggle">
+              <input id="obWeatherEnabled" type="checkbox" />
+              <span class="onboarding-form__toggle-track"></span>
+              <span class="onboarding-form__toggle-label">允许联网查询该城市天气</span>
+            </label>
+            <label class="onboarding-form__toggle">
+              <input id="obDndEnabled" type="checkbox" checked />
+              <span class="onboarding-form__toggle-track"></span>
+              <span class="onboarding-form__toggle-label">启用勿扰 (22:00-08:00)</span>
+            </label>
+            <label class="onboarding-form__toggle">
+              <input id="obNotificationEnabled" type="checkbox" />
+              <span class="onboarding-form__toggle-track"></span>
+              <span class="onboarding-form__toggle-label">启用系统通知</span>
+            </label>
+            <label class="onboarding-form__toggle">
+              <input id="obSoundEnabled" type="checkbox" />
+              <span class="onboarding-form__toggle-track"></span>
+              <span class="onboarding-form__toggle-label">启用通知声音</span>
+            </label>
+            <label class="onboarding-form__toggle">
+              <input id="obMemoryEnabled" type="checkbox" checked />
+              <span class="onboarding-form__toggle-track"></span>
+              <span class="onboarding-form__toggle-label">启用记忆</span>
+            </label>
+          </div>
+          <div class="onboarding-form__actions">
+            <button type="submit" class="onboarding-form__submit">完成配置</button>
+          </div>
+        </form>
       </section>
     </main>
     <script src="./config/pet-profile.js"></script>

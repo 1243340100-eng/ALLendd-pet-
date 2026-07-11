@@ -1,0 +1,301 @@
+结论很明确：Trae 没有正确完成计划中的 V1。
+
+更准确地说，它完成了大量“可单独运行的 TypeScript 架构原型和单元测试”，也修复了一批旧框架问题；但没有把新架构接入真实 Electron 桌宠。发布文档最后声称“所有阶段实施完毕”，[RELEASE_GUIDE.md](DDocuments展示项目内容roxy-electron-pet-frameworkRELEASE_GUIDE.md308)，这个结论不成立。
+
+## 做得比较好的部分
+
+以下内容确实有实现，不是纯空壳：
+
+- 四个 LangGraph `StateGraph` 已建立。
+- SQLite migration、repositories、角色记忆隔离有实现。
+- `ModelGateway` 有超时、重试、结构化输出和用量记录。
+- `CharacterPackManager`、SpriteSheet 配置和 Live2D 空接口已经建立。
+- PermissionGuard、SkillRegistry 和三个技能存在。
+- TypeScript 严格类型检查通过。
+- 新旧全部自动化脚本都通过。
+- 旧链路的最终回复 post-check、API Key 降级存储、数据原子写入、角色残留等问题确实得到改善。
+
+这些可以作为下一步继续开发的基础，不需要推倒重来。
+
+## 关键问题
+
+### P0：新架构完全没有接入真实桌宠
+
+应用入口仍然是旧的 [package.json](DDocuments展示项目内容roxy-electron-pet-frameworkpackage.json5)：
+
+```json
+main appmain.js
+```
+
+真实 `appmain.js` 没有引用：
+
+- `src`
+- ConversationGraph
+- OnboardingGraph
+- ProactiveGraph
+- ReflectionGraph
+- SQLite
+- SchedulerService
+- CharacterPackManager
+- ModelGateway
+
+计划要求的 `AppEventBus`、`GraphDispatcher`、`srcmain`、`srcagentdispatcher` 也没有创建。
+
+所以当前实际流程仍然是：
+
+```text
+旧 renderer
+→ 旧 IPC
+→ 旧 main.js
+→ 旧 JSON 记忆和旧聊天请求
+```
+
+不是计划中的：
+
+```text
+AppEvent
+→ GraphDispatcher
+→ LangGraph
+→ SQLiteSkillRegistry
+→ Renderer DTO
+```
+
+这是整个验收中最严重的问题。
+
+### P0：打包产物不会运行新架构
+
+`typecheck` 使用的是 `tsc --noEmit`，[package.json](DDocuments展示项目内容roxy-electron-pet-frameworkpackage.json24)，没有生成可执行的 JavaScript。
+
+打包配置只是把原始 `src.ts` 放入 `app.asar`，[package.json](DDocuments展示项目内容roxy-electron-pet-frameworkpackage.json54)。Electron 仍然启动旧 `appmain.js`，这些 TypeScript 文件只是躺在安装包里。
+
+我用临时目录进行了打包诊断：
+
+- electron-builder 可以完成打包。
+- `app.asar` 包含旧 `appmain.js` 和原始 `src.ts`。
+- 没有 `dist`。
+- 没有运行时接线。
+- 当前正式 `release` 仍是 2026 年 6 月 21 日的旧产物，并未更新。
+
+因此目前没有可供用户验收的新架构 EXE。
+
+### P0：角色包打包路径写错
+
+真实角色包在：
+
+```text
+character-packsdefault
+```
+
+但 electron-builder 配置读取：
+
+```json
+from resources
+```
+
+见 [package.json](DDocuments展示项目内容roxy-electron-pet-frameworkpackage.json59)。
+
+项目中根本不存在 `resources`。临时打包时 electron-builder 已明确输出：
+
+```text
+file source doesn't exist ...resources
+```
+
+结果是安装包里没有默认角色包，而发布指南却宣称首次启动会加载它。
+
+### P0：提醒主链存在多个实际错误
+
+#### 追问后不会继续创建提醒
+
+第一轮“提醒我开会”会保存 checkpoint。第二轮“明天下午3点”虽然加载了提醒草稿，[conversation graph](DDocuments展示项目内容roxy-electron-pet-frameworksrcagentgraphsconversationgraph.ts128)，但随后又重新进行意图判断。
+
+“明天下午3点”不包含“提醒我”，因此会被识别成普通聊天，[deterministic-intent-check.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcagentgraphsconversationnodesdeterministic-intent-check.ts105)。
+
+对应测试只验证 checkpoint 被消费、第二轮有回复，没有验证提醒是否创建，[fault-injection.test.ts](DDocuments展示项目内容roxy-electron-pet-frameworktestsunitfault-injection.test.ts473)。
+
+#### “明天下午3点”会解析成凌晨3点
+
+明天和后天分支没有处理“下午”增加 12 小时，[create-reminder-branch.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcagentgraphsconversationnodescreate-reminder-branch.ts54)。
+
+#### 缺少时间时擅自默认上午9点
+
+“明天提醒我开会”应当追问具体时间，但代码直接使用明天 900，[create-reminder-branch.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcagentgraphsconversationnodescreate-reminder-branch.ts65)。
+
+#### 重复提醒会跳过第一次触发
+
+创建重复提醒时，技能先把 `next_trigger_at` 增加一天，[create-reminder skill](DDocuments展示项目内容roxy-electron-pet-frameworksrcskillscreate-reminderindex.ts45)。用户要求的第一次时间不会触发。
+
+#### 重复规则格式不一致
+
+创建方保存 `daily``weekly` 普通字符串，Scheduler 却使用 `JSON.parse()` 读取，[SchedulerService.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcservicesSchedulerService.ts169)。解析失败后重复提醒会被停用。
+
+### P0：Scheduler 会在真正通知前标记“已投递”
+
+Scheduler 发现到期提醒后，首先调用 `markOccurrenceDelivered()`，[SchedulerService.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcservicesSchedulerService.ts94)。
+
+repository 立即写入：
+
+```text
+delivery_status = delivered
+delivered_at = now
+```
+
+见 [reminder-repository.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcinfrastructuredatabaserepositoriesreminder-repository.ts68)。
+
+之后才发布 outbox，而且注册的 `this.handler` 从未被调用。若此时崩溃、全屏延迟或没有 outbox consumer：
+
+- occurrence 已被视为送达。
+- 一次性提醒已经停用。
+- 用户实际上没有收到提醒。
+- 后续重扫也不会再次投递。
+
+这违背了计划中“全屏期间保持待投递，退出后补发”的核心保证。
+
+## P1：几个宣称完成的功能实际仍是 stub
+
+- 系统通知只写日志，没有调用 Electron Notification：[NotificationAdapter.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcadaptersnotificationsNotificationAdapter.ts35)
+- 声音只写日志，没有播放：[SoundAdapter.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcadapterssoundSoundAdapter.ts28)
+- 天气永远返回模拟的“22℃、晴”：[WeatherAdapter.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcadaptersweatherWeatherAdapter.ts101)
+- 全屏适配器不会检测系统全屏，只能由外部手动调用 `setFullscreen()`：[FullscreenAdapter.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcadaptersfullscreenFullscreenAdapter.ts25)
+- `enqueueReflection` 没有写入 reflection queue，只返回一个 payload：[enqueue-reflection.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcagentgraphsconversationnodesenqueue-reflection.ts48)
+- 没有后台 worker 去 dequeue 和运行 ReflectionGraph。
+- `pet_bubble` 分支只是生成结果对象，没有真正发送到 renderer。
+
+Live2D 空实现是计划允许的，不算问题；但其他几项属于计划明确要求 V1 可用的功能。
+
+### P1：Onboarding 并没有真正中断等待用户
+
+`collect_user_preferences` 设置了：
+
+```text
+awaitingUserInput true
+preferences 默认值
+```
+
+见 [collect-user-preferences.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcagentgraphsonboardingnodescollect-user-preferences.ts56)。
+
+但 OnboardingGraph 是无条件线性边，之后仍会继续执行并保存默认配置，最终标记 onboarding 完成。它没有使用 LangGraph interrupt，也没有真实 UI 恢复入口。
+
+因此“首次引导可中断恢复”没有完成。
+
+### P1：IPC 安全 Schema 没有用于真实 IPC
+
+新建的 [ipc.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcsharedschemasipc.ts93) 确实能验证输入，但真实 `appmain.js` 完全没有调用它。
+
+例如真实 IPC 仍直接接收 payload，[appmain.js](DDocuments展示项目内容roxy-electron-pet-frameworkappmain.js1404)。
+
+所以测试证明的是“校验函数本身工作”，不是“Electron IPC 已受到保护”。
+
+### P1：旧 Safe Shell 与计划直接冲突
+
+计划明确规定 V1 不包含命令执行，并禁止执行命令。但真实应用仍暴露 Safe Shell 的全部 IPC，[appmain.js](DDocuments展示项目内容roxy-electron-pet-frameworkappmain.js1410)。
+
+虽然它默认关闭且有白名单，但仍然不符合这份计划的产品范围。
+
+### P1：没有旧数据到 SQLite 的迁移
+
+当前用户数据继续位于：
+
+```text
+pet-data.json
+api-config.json
+```
+
+新架构使用：
+
+```text
+pet-data.sqlite
+```
+
+但 `src` 中没有读取旧 JSON、迁移记忆、好感度、会话或设置的代码。
+
+如果未来直接接通 SQLite，现有用户会看到一个空的新账户，旧数据仍留在另一套存储中。这与计划中的“升级不覆盖用户数据”不相符。
+
+## P2：测试看起来很多，但验收覆盖存在误导
+
+所有测试都通过，这是好事；但目前只有：
+
+```text
+testsunit
+```
+
+计划要求的这些目录并不存在：
+
+```text
+testsintegration
+testselectron
+testsgraph
+```
+
+大部分新测试使用：
+
+- mock fetch
+- mock notification
+- mock fullscreen
+- mock sound
+- 临时 SQLite
+- 直接实例化 GraphRunner
+
+没有测试：
+
+- Electron 启动新 Graph。
+- preload 调用新 IPC。
+- renderer 收到 Graph DTO。
+- Scheduler 真实触发气泡。
+- 打包后角色包加载。
+- better-sqlite3 在 Electron 31 ABI 下加载。
+- 休眠恢复。
+- 真实系统通知。
+- 全屏补发。
+- 开机日报 UI。
+- 旧数据迁移。
+
+因此“491 个测试通过”不能推出“V1 可以发布”。
+
+### P2：模型调用上限不等于真实 HTTP 调用上限
+
+`ModelGateway` 每次逻辑 `invoke()` 只增加一次配额，[ModelGateway.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcservicesModelGateway.ts137)，内部重试不计次数。
+
+一次逻辑调用可以请求 API 3 次；降级模型后又可能请求 3 次。现有故障测试甚至明确验证了 6 次 fetch。
+
+所以“每轮最多3次模型调用”实际可能远高于3次 HTTPAPI 请求，费用保护不完整。
+
+### P2：角色包路径检查存在前缀绕过风险
+
+当前使用：
+
+```ts
+resolved.startsWith(packRoot)
+```
+
+见 [CharacterPackManager.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcservicesCharacterPackManager.ts120) 和 [SpriteSheetRenderer.ts](DDocuments展示项目内容roxy-electron-pet-frameworksrcservicescharacterSpriteSheetRenderer.ts77)。
+
+类似：
+
+```text
+Cpacksfoo
+Cpacksfoobarsecret
+```
+
+第二个路径会通过字符串前缀检查。应改用 `path.relative()` 并验证不以 `..` 开头。
+
+## 阶段验收判断
+
+ 阶段  判断 
+------
+ 0 项目审计  部分完成 
+ 1 TS 契约与 Schema  模块完成，未接入 
+ 2 SQLite 与服务  单元实现完成，未接入 
+ 3 角色包Renderer  模块完成，打包路径错误 
+ 4 OnboardingGraph  图存在，中断和 UI 未完成 
+ 5 ConversationGraph技能  图存在，提醒流程有严重错误 
+ 6 SchedulerProactive  大量 stub，没有真实投递 
+ 7 Reflection记忆管理  Graph 存在，异步队列未接线 
+ 8 恢复发布  未完成，没有真实 Electron E2E 
+
+最终主链 [架构优化计划.txt](DDocuments展示项目内容roxy-electron-pet-framework架构优化计划.txt1291) 中，除了旧版普通聊天之外，基本都没有在真实桌宠程序里跑通。
+
+建议不要把当前状态标记为 V1 完成，也不要让用户测试现有 `release`。正确定位应该是：
+
+ LangGraph V1 架构原型与单元测试完成，Electron 集成、提醒可靠投递、真实主动能力、数据迁移和发布验收尚未完成。
+
+本次没有修改工作区文件；只在系统临时目录生成了诊断构建。

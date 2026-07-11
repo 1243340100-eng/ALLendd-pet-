@@ -1,6 +1,9 @@
 const stage = document.getElementById('stage');
 const pet = document.getElementById('pet');
 const bubble = document.getElementById('bubble');
+const reminderBubble = document.getElementById('reminderBubble');
+const reminderStack = document.getElementById('reminderStack');
+let reminderBubbleTimer = null;
 const frameworkNotice = document.getElementById('frameworkNotice');
 const apiSettings = document.getElementById('apiSettings');
 const apiPanel = document.getElementById('apiPanel');
@@ -36,14 +39,40 @@ const clearUserMemory = document.getElementById('clearUserMemory');
 const clearLongTermMemory = document.getElementById('clearLongTermMemory');
 const clearShortTermMemory = document.getElementById('clearShortTermMemory');
 const clearAllMemory = document.getElementById('clearAllMemory');
+const exportMemory = document.getElementById('exportMemory');
+// 架构状态与提醒区域
+const archStatusView = document.getElementById('archStatusView');
+const reminderList = document.getElementById('reminderList');
+const refreshReminders = document.getElementById('refreshReminders');
+const triggerDailyDigestBtn = document.getElementById('triggerDailyDigest');
+const triggerReminderCheckBtn = document.getElementById('triggerReminderCheck');
+// Onboarding 首次配置面板
+const onboardingPanel = document.getElementById('onboardingPanel');
+const onboardingMessage = document.getElementById('onboardingMessage');
+const onboardingForm = document.getElementById('onboardingForm');
+const obNickname = document.getElementById('obNickname');
+const obPreferredName = document.getElementById('obPreferredName');
+const obReplyLength = document.getElementById('obReplyLength');
+const obProactiveLevel = document.getElementById('obProactiveLevel');
+const obWeatherCity = document.getElementById('obWeatherCity');
+const obDndEnabled = document.getElementById('obDndEnabled');
+const obNotificationEnabled = document.getElementById('obNotificationEnabled');
+const obSoundEnabled = document.getElementById('obSoundEnabled');
+const obMemoryEnabled = document.getElementById('obMemoryEnabled');
 const petProfile = window.petProfile || {
   displayName: 'Pet Framework',
   characterName: 'Pet',
   spriteSheet: '',
   usePlaceholderPet: true,
+  spriteCell: { width: 192, height: 208 },
+  spriteSheetSize: { width: 1536, height: 1872 },
+  animationRows: {},
+  responseEmotion: { enabled: false, durationMs: 6500, fallbackState: 'waving' },
   defaultLanguage: 'zh',
   defaultDrinkReminderText: '\u8be5\u559d\u6c34\u5566\uff0c\u7167\u987e\u597d\u81ea\u5df1\u54e6\u3002',
-  defaultNightReminderText: '\u5f88\u665a\u5566\uff0c\u65e9\u70b9\u4f11\u606f\uff0c\u665a\u5b89\u3002'
+  defaultNightReminderText: '\u5f88\u665a\u5566\uff0c\u65e9\u70b9\u4f11\u606f\uff0c\u665a\u5b89\u3002',
+  userPetName: 'Pet',
+  localStorageNamespace: 'pet'
 };
 
 const i18n = {
@@ -67,7 +96,32 @@ const i18n = {
     clear: '\u6e05\u7a7a',
     clearExpired: '\u6e05\u7406\u8fc7\u671f',
     clearAllMemories: '\u6e05\u7a7a\u5168\u90e8\u8bb0\u5fc6',
-    chatPlaceholder: '\u8f93\u5165\u4f60\u60f3\u5bf9 Pet \u8bf4\u7684\u8bdd',
+    exportMemory: '导出个人数据',
+    exportSuccess: '已导出到 {path}',
+    exportFailed: '导出失败',
+    exportCancelled: '已取消导出',
+    archRuntime: '运行时',
+    archLanggraph: 'LangGraph 新架构',
+    archLegacy: '旧架构（降级）',
+    archInitialized: '已初始化',
+    archDatabase: 'SQLite 数据库',
+    archConnected: '已连接',
+    archScheduler: '调度器',
+    archReflection: '反思 Worker',
+    archCharacter: '当前角色',
+    archSkills: '已注册技能',
+    archNone: '无',
+    archError: '错误',
+    archStatusUnknown: '查询中...',
+    noReminders: '暂无提醒',
+    reminderDelete: '删除',
+    reminderRefresh: '刷新',
+    digestTriggered: '已触发今日摘要生成',
+    digestFailed: '触发失败，请检查架构状态',
+    reminderChecked: '已刷新提醒列表',
+    triggerDigestLabel: '生成今日摘要',
+    triggerReminderCheckLabel: '检查到期提醒',
+    chatPlaceholder: '\u8f93\u5165\u4f60\u60f3\u5bf9 {name} \u8bf4\u7684\u8bdd',
     send: '\u53d1\u9001',
     loading: '\u52a0\u8f7d\u4e2d...',
     ready: '\u5df2\u5c31\u7eea',
@@ -118,9 +172,11 @@ const i18n = {
     shortTermExpiredCleared: '\u5df2\u6e05\u7406\u8fc7\u671f\u77ed\u671f\u8bb0\u5fc6\uff1a{count} \u6761',
     clearExpiredFailed: '\u6e05\u7406\u8fc7\u671f\u77ed\u671f\u8bb0\u5fc6\u5931\u8d25\u3002',
     clearFailedBubble: '\u6e05\u7406\u5931\u8d25',
-    longTermMemorySaved: '\u55ef\uff0c\u8fd9\u4ef6\u4e8b\u6211\u8bb0\u4e0b\u6765\u4e86\uff0c\u4ee5\u540e\u804a\u5230\u65f6\u6211\u4f1a\u63a5\u4e0a\u524d\u6587\u3002',
-    userMemorySaved: '\u597d\u7684\uff0c\u6211\u8bb0\u4f4f\u4e86\u3002\u8fd9\u4f1a\u5e2e\u6211\u4ee5\u540e\u66f4\u597d\u5730\u7406\u89e3\u4f60\u3002',
     memoryAiUnavailable: '\u5f53\u524d\u65e0\u6cd5\u4f7f\u7528 AI \u5224\u65ad\u5e76\u4fdd\u5b58\u8bb0\u5fc6\uff0c\u8bf7\u68c0\u67e5 API \u8bbe\u7f6e\u540e\u518d\u8bd5\u3002',
+    safeShellCancel: '\u53d6\u6d88',
+    safeShellFailed: '\u5b89\u5168 Shell \u64cd\u4f5c\u5931\u8d25\u3002',
+    endpointDomainChanged: '\u63a5\u53e3\u5730\u5740\u57df\u540d\u5df2\u4ece {oldDomain} \u53d8\u4e3a {newDomain}\u3002API Key \u548c\u804a\u5929\u6570\u636e\u5c06\u53d1\u9001\u5230\u8be5\u57df\u540d\u3002\u786e\u8ba4\u7ee7\u7eed\uff1f',
+    encryptionUnavailable: '\u5f53\u524d\u7cfb\u7edf\u52a0\u5bc6\u4e0d\u53ef\u7528\uff0cAPI Key \u4ec5\u5728\u672c\u6b21\u8fd0\u884c\u4e2d\u4fdd\u5b58\uff0c\u91cd\u542f\u540e\u9700\u91cd\u65b0\u8f93\u5165\u3002',
     thinking: '\u6211\u60f3\u4e00\u4e0b...',
     emptyReply: '\u6211\u8fd8\u6ca1\u60f3\u597d\u600e\u4e48\u56de\u7b54\u5462\u3002',
     apiFailed: '\u8fde\u63a5 API \u5931\u8d25\u4e86\uff0c\u8bf7\u68c0\u67e5 Key \u6216\u7f51\u7edc\u3002',
@@ -151,7 +207,32 @@ const i18n = {
     clear: 'Clear',
     clearExpired: 'Clear expired',
     clearAllMemories: 'Clear all memories',
-    chatPlaceholder: 'Say something to Pet',
+    exportMemory: 'Export data',
+    exportSuccess: 'Exported to {path}',
+    exportFailed: 'Export failed',
+    exportCancelled: 'Export cancelled',
+    archRuntime: 'Runtime',
+    archLanggraph: 'LangGraph',
+    archLegacy: 'Legacy (degraded)',
+    archInitialized: 'Initialized',
+    archDatabase: 'SQLite DB',
+    archConnected: 'Connected',
+    archScheduler: 'Scheduler',
+    archReflection: 'Reflection',
+    archCharacter: 'Character',
+    archSkills: 'Skills',
+    archNone: 'None',
+    archError: 'Error',
+    archStatusUnknown: 'Querying...',
+    noReminders: 'No reminders',
+    reminderDelete: 'Delete',
+    reminderRefresh: 'Refresh',
+    digestTriggered: 'Digest triggered',
+    digestFailed: 'Trigger failed, check architecture status',
+    reminderChecked: 'Reminders refreshed',
+    triggerDigestLabel: 'Generate digest',
+    triggerReminderCheckLabel: 'Check reminders',
+    chatPlaceholder: 'Say something to {name}',
     send: 'Send',
     loading: 'Loading...',
     ready: 'Ready',
@@ -202,9 +283,11 @@ const i18n = {
     shortTermExpiredCleared: 'Expired short-term memories cleared: {count}',
     clearExpiredFailed: 'Failed to clear expired short-term memories.',
     clearFailedBubble: 'Clear failed',
-    longTermMemorySaved: "I understand. I'll keep that in mind and connect it gently next time it matters.",
-    userMemorySaved: "All right, I'll remember that. It will help me understand you a little better.",
     memoryAiUnavailable: 'AI memory analysis is unavailable. Check API settings and try again.',
+    safeShellCancel: 'Cancel',
+    safeShellFailed: 'Safe Shell operation failed.',
+    endpointDomainChanged: 'Endpoint domain changed from {oldDomain} to {newDomain}. API Key and chat data will be sent to this domain. Continue?',
+    encryptionUnavailable: 'System encryption is unavailable. API Key will only be saved for this session and must be re-entered after restart.',
     thinking: 'Let me think...',
     emptyReply: "I haven't found the right answer yet.",
     apiFailed: 'Failed to connect to the API. Check your Key or network.',
@@ -217,7 +300,7 @@ const i18n = {
   }
 };
 
-const rows = {
+const baseRows = {
   idle: { row: 0, frames: 6, fps: 5 },
   'running-right': { row: 1, frames: 8, fps: 9 },
   'running-left': { row: 2, frames: 8, fps: 9 },
@@ -229,9 +312,31 @@ const rows = {
   review: { row: 8, frames: 6, fps: 5 }
 };
 
-const cell = { width: 192, height: 208 };
+function normalizeAnimationRows(value) {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([name, definition]) => {
+    const row = Number(definition?.row);
+    const frames = Number(definition?.frames);
+    const fps = Number(definition?.fps);
+    if (!name || !Number.isInteger(row) || row < 0) return [];
+    if (!Number.isInteger(frames) || frames < 1 || frames > 64) return [];
+    if (!Number.isFinite(fps) || fps <= 0 || fps > 60) return [];
+    return [[name, { row, frames, fps }]];
+  }));
+}
+
+let rows = {
+  ...baseRows,
+  ...normalizeAnimationRows(petProfile.animationRows)
+};
+let cell = {
+  width: Math.max(1, Number(petProfile.spriteCell?.width) || 192),
+  height: Math.max(1, Number(petProfile.spriteCell?.height) || 208)
+};
 const minScale = 0.35;
 const maxScale = 1.55;
+const ns = petProfile.localStorageNamespace || 'pet';
+const lsKey = (key) => `${ns}-${key}`;
 
 let state = 'idle';
 let frame = 0;
@@ -241,30 +346,30 @@ let clockTimer = null;
 let bubbleTimer = null;
 let dragReturnTimer = null;
 let restoreTimers = [];
-let scale = Number(localStorage.getItem('roxy-scale') || '1.18');
-let reminderMinutes = Number(localStorage.getItem('roxy-reminder-minutes') || '45');
-let lastNightReminderDate = localStorage.getItem('roxy-last-night-date') || '';
+let scale = Number(localStorage.getItem(lsKey('scale')) || '1.18');
+let reminderMinutes = Number(localStorage.getItem(lsKey('reminder-minutes')) || '45');
+let lastNightReminderDate = localStorage.getItem(lsKey('last-night-date')) || '';
 let dragAnimating = false;
 let lastDirection = 'right';
 let appVisible = true;
 let chatHistory = [];
 let chatBusy = false;
-let roxyLanguage = getLanguage();
+let petLanguage = getLanguage();
 let statePanelLoadToken = 0;
 
 function getLanguage() {
-  const saved = localStorage.getItem('roxyLanguage');
+  const saved = localStorage.getItem(lsKey('language'));
   if (saved === 'en' || saved === 'zh') return saved;
   return petProfile.defaultLanguage === 'en' ? 'en' : 'zh';
 }
 
 function setLanguage(lang) {
-  roxyLanguage = lang === 'en' ? 'en' : 'zh';
-  localStorage.setItem('roxyLanguage', roxyLanguage);
+  petLanguage = lang === 'en' ? 'en' : 'zh';
+  localStorage.setItem(lsKey('language'), petLanguage);
 }
 
 function t(key, params = {}) {
-  const value = i18n[roxyLanguage]?.[key] || i18n.zh[key] || key;
+  const value = i18n[petLanguage]?.[key] || i18n.zh[key] || key;
   return Object.entries(params).reduce(
     (text, [name, replacement]) => text.replaceAll(`{${name}}`, String(replacement)),
     value
@@ -273,8 +378,8 @@ function t(key, params = {}) {
 
 function getReminderSettings() {
   return {
-    drinkText: localStorage.getItem('roxyDrinkReminderText') || '',
-    nightText: localStorage.getItem('roxyNightReminderText') || ''
+    drinkText: localStorage.getItem(lsKey('drinkReminderText')) || '',
+    nightText: localStorage.getItem(lsKey('nightReminderText')) || ''
   };
 }
 
@@ -282,23 +387,23 @@ function saveReminderSettings() {
   const drinkText = drinkReminderText.value.trim();
   const nightText = nightReminderText.value.trim();
   if (drinkText) {
-    localStorage.setItem('roxyDrinkReminderText', drinkText);
+    localStorage.setItem(lsKey('drinkReminderText'), drinkText);
   } else {
-    localStorage.removeItem('roxyDrinkReminderText');
+    localStorage.removeItem(lsKey('drinkReminderText'));
   }
   if (nightText) {
-    localStorage.setItem('roxyNightReminderText', nightText);
+    localStorage.setItem(lsKey('nightReminderText'), nightText);
   } else {
-    localStorage.removeItem('roxyNightReminderText');
+    localStorage.removeItem(lsKey('nightReminderText'));
   }
 }
 
 function getDrinkReminderMessage() {
-  return localStorage.getItem('roxyDrinkReminderText') || t('drinkReminderDefault');
+  return localStorage.getItem(lsKey('drinkReminderText')) || t('drinkReminderDefault');
 }
 
 function getNightReminderMessage() {
-  return localStorage.getItem('roxyNightReminderText') || t('nightReminderDefault');
+  return localStorage.getItem(lsKey('nightReminderText')) || t('nightReminderDefault');
 }
 
 function setText(element, textValue) {
@@ -308,6 +413,12 @@ function setText(element, textValue) {
 function applyPetProfile() {
   document.title = petProfile.displayName || 'Pet Framework';
   pet.setAttribute('aria-label', petProfile.characterName || 'Pet');
+  const sheetWidth = Math.max(cell.width, Number(petProfile.spriteSheetSize?.width) || 1536);
+  const sheetHeight = Math.max(cell.height, Number(petProfile.spriteSheetSize?.height) || 1872);
+  document.documentElement.style.setProperty('--cell-w', `${cell.width}px`);
+  document.documentElement.style.setProperty('--cell-h', `${cell.height}px`);
+  document.documentElement.style.setProperty('--sheet-w', `calc(${sheetWidth}px * var(--scale))`);
+  document.documentElement.style.setProperty('--sheet-h', `calc(${sheetHeight}px * var(--scale))`);
   const spriteSheet = String(petProfile.spriteSheet || '').trim();
   if (spriteSheet && !petProfile.usePlaceholderPet) {
     pet.classList.remove('pet--placeholder');
@@ -320,8 +431,62 @@ function applyPetProfile() {
   frameworkNotice.classList.remove('hidden');
 }
 
+/**
+ * 应用角色包渲染配置（来自 CharacterPackManager → Main → character-config IPC）。
+ * 用角色包的 spritesheet 替换 pet-profile.js 中的默认占位配置。
+ * 更新 petProfile + 全局 rows/cell，然后重新执行 applyPetProfile。
+ */
+function applyCharacterConfig(config) {
+  if (!config) return;
+
+  // 更新 petProfile 的 sprite 字段
+  petProfile.spriteSheet = config.spriteSheetUrl || '';
+  petProfile.usePlaceholderPet = config.rendererType === 'placeholder';
+  petProfile.spriteCell = {
+    width: config.cellWidth || 192,
+    height: config.cellHeight || 208
+  };
+  petProfile.spriteSheetSize = {
+    width: config.sheetWidth || 1536,
+    height: config.sheetHeight || 1872
+  };
+  petProfile.animationRows = config.rows || {};
+  if (config.characterName || config.characterId) {
+    petProfile.characterName = config.characterName || config.characterId;
+    petProfile.displayName = config.characterName || config.characterId;
+  }
+
+  // 重建全局 rows 和 cell
+  rows = {
+    ...baseRows,
+    ...normalizeAnimationRows(petProfile.animationRows)
+  };
+  cell = {
+    width: Math.max(1, Number(petProfile.spriteCell?.width) || 192),
+    height: Math.max(1, Number(petProfile.spriteCell?.height) || 208)
+  };
+
+  // 重新应用 sprite 配置
+  applyPetProfile();
+
+  // 重置动画到 idle 以应用新的 rows/cell
+  state = 'idle';
+  frame = 0;
+}
+
+// 监听 Main 推送的角色渲染配置
+if (window.petAPI?.onCharacterConfig) {
+  window.petAPI.onCharacterConfig((config) => {
+    try {
+      applyCharacterConfig(config);
+    } catch (e) {
+      console.error('[renderer] applyCharacterConfig failed:', e);
+    }
+  });
+}
+
 function applyLanguage() {
-  document.documentElement.lang = roxyLanguage === 'en' ? 'en' : 'zh-CN';
+  document.documentElement.lang = petLanguage === 'en' ? 'en' : 'zh-CN';
   stage.setAttribute('aria-label', t('ariaStage'));
   apiPanel.setAttribute('aria-label', t('ariaApiPanel'));
   chatPanel.setAttribute('aria-label', t('ariaChatPanel'));
@@ -348,7 +513,7 @@ function applyLanguage() {
   }
 
   setText(chatPanel.querySelector('.chat-panel__head strong'), t('chat'));
-  chatInput.placeholder = t('chatPlaceholder').replace('Roxy', petProfile.characterName || 'Pet');
+  chatInput.placeholder = t('chatPlaceholder', { name: petProfile.characterName || 'Pet' });
   setText(chatSend, t('send'));
 
   setText(statePanel.querySelector('.state-panel__head strong'), t('state'));
@@ -362,6 +527,10 @@ function applyLanguage() {
   setText(clearShortTermMemory, t('clear'));
   setText(clearExpiredShortTerm, t('clearExpired'));
   setText(clearAllMemory, t('clearAllMemories'));
+  setText(exportMemory, t('exportMemory'));
+  if (refreshReminders) setText(refreshReminders, t('reminderRefresh'));
+  if (triggerDailyDigestBtn) setText(triggerDailyDigestBtn, t('triggerDigestLabel'));
+  if (triggerReminderCheckBtn) setText(triggerReminderCheckBtn, t('triggerReminderCheckLabel'));
   setText(shortTermMemoryNote, t('shortTermNote'));
 
   if (!statePanel.classList.contains('hidden')) {
@@ -370,7 +539,7 @@ function applyLanguage() {
 }
 
 function toggleLanguage() {
-  setLanguage(roxyLanguage === 'zh' ? 'en' : 'zh');
+  setLanguage(petLanguage === 'zh' ? 'en' : 'zh');
   applyLanguage();
 }
 
@@ -382,7 +551,7 @@ function applyScale(nextScale = scale) {
   scale = clampScale(nextScale);
   document.documentElement.style.setProperty('--scale', String(scale));
   window.petAPI?.setWindowScale(scale);
-  localStorage.setItem('roxy-scale', String(scale));
+  localStorage.setItem(lsKey('scale'), String(scale));
   drawFrame();
 }
 
@@ -412,6 +581,7 @@ function drawFrame() {
   const row = rows[state].row;
   const x = -frame * cell.width * scale;
   const y = -row * cell.height * scale;
+  pet.dataset.animationState = state;
   pet.style.backgroundPosition = `${x}px ${y}px`;
 }
 
@@ -423,6 +593,38 @@ function showBubble(message, duration = 12000) {
   bubbleTimer = setTimeout(() => {
     bubble.classList.add('hidden');
   }, duration);
+}
+
+/**
+ * 显示提醒气泡（桌宠左侧，独立于聊天气泡）。
+ * 提醒到期时由 ProactiveGraph 经 proactive-event 通道推送。
+ * 点击可提前关闭。
+ */
+function showReminderBubble(message, duration = 20000) {
+  if (!appVisible || !reminderStack) return;
+  // 动态创建气泡并 append 到堆叠容器，支持多个提醒垂直堆叠
+  const el = document.createElement('div');
+  el.className = 'reminder-bubble';
+  el.setAttribute('role', 'alert');
+  el.textContent = message;
+  el.addEventListener('click', () => removeReminderBubble(el));
+  reminderStack.appendChild(el);
+  // 最多保留 5 个动态气泡，超过时移除最旧的一个
+  const bubbles = reminderStack.querySelectorAll('.reminder-bubble:not(#reminderBubble)');
+  if (bubbles.length > 5) {
+    removeReminderBubble(bubbles[0]);
+  }
+  // duration 后自动从 DOM 移除
+  setTimeout(() => removeReminderBubble(el), duration);
+}
+
+function removeReminderBubble(el) {
+  if (!el || !el.parentNode) return;
+  el.classList.add('hidden');
+  // 等待过渡动画完成后再移除 DOM
+  setTimeout(() => {
+    if (el.parentNode) el.remove();
+  }, 250);
 }
 
 function clearRestoreTimers() {
@@ -450,7 +652,7 @@ function nightReminder() {
 function scheduleReminder() {
   clearInterval(reminderTimer);
   reminderTimer = setInterval(remindHydration, reminderMinutes * 60 * 1000);
-  localStorage.setItem('roxy-reminder-minutes', String(reminderMinutes));
+  localStorage.setItem(lsKey('reminder-minutes'), String(reminderMinutes));
 }
 
 function checkClockForNightReminder() {
@@ -458,7 +660,7 @@ function checkClockForNightReminder() {
   const dateKey = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
   if (now.getHours() === 0 && now.getMinutes() === 0 && lastNightReminderDate !== dateKey) {
     lastNightReminderDate = dateKey;
-    localStorage.setItem('roxy-last-night-date', dateKey);
+    localStorage.setItem(lsKey('last-night-date'), dateKey);
     nightReminder();
   }
 }
@@ -525,6 +727,18 @@ function closeApiPanel() {
   apiPanel.classList.add('hidden');
 }
 
+function getResponseAnimationState(emotion) {
+  const config = petProfile.responseEmotion || {};
+  if (config.enabled && rows[emotion]) return emotion;
+  const fallbackState = String(config.fallbackState || 'waving');
+  return rows[fallbackState] ? fallbackState : 'waving';
+}
+
+function getResponseAnimationDuration() {
+  const duration = Number(petProfile.responseEmotion?.durationMs);
+  return Number.isFinite(duration) ? Math.min(30000, Math.max(1200, duration)) : 6500;
+}
+
 function focusChatInput() {
   chatInput.disabled = false;
   chatSend.disabled = chatBusy;
@@ -543,15 +757,39 @@ function focusChatInput() {
     });
 }
 
+function getHostnameFromUrl(urlString) {
+  try {
+    return new URL(urlString).hostname;
+  } catch {
+    return '';
+  }
+}
+
 async function saveApiSettings(clearApiKey = false) {
   apiSave.disabled = true;
   apiStatus.dataset.statusKey = 'saving';
   apiStatus.textContent = t('saving');
   try {
     saveReminderSettings();
+
+    const currentConfig = await window.petAPI?.getApiConfig?.();
+    const newEndpoint = apiEndpoint.value.trim();
+    const oldDomain = getHostnameFromUrl(currentConfig?.endpoint || '');
+    const newDomain = getHostnameFromUrl(newEndpoint);
+    if (oldDomain && newDomain && oldDomain !== newDomain) {
+      const confirmed = await showConfirmDialog(
+        t('endpointDomainChanged', { oldDomain, newDomain })
+      );
+      if (!confirmed) {
+        apiStatus.dataset.statusKey = currentConfig?.hasApiKey ? 'apiSavedWithKey' : 'apiSavedEmpty';
+        apiStatus.textContent = t(apiStatus.dataset.statusKey);
+        return;
+      }
+    }
+
     const config = await window.petAPI?.saveApiConfig?.({
       provider: 'deepseek',
-      endpoint: apiEndpoint.value,
+      endpoint: newEndpoint,
       model: apiModel.value,
       apiKey: apiKey.value,
       clearApiKey
@@ -561,7 +799,11 @@ async function saveApiSettings(clearApiKey = false) {
     apiKey.placeholder = config?.hasApiKey ? t('savedApiKey') : 'sk-...';
     apiStatus.dataset.statusKey = config?.hasApiKey ? 'apiSavedWithKey' : 'apiSavedEmpty';
     apiStatus.textContent = t(apiStatus.dataset.statusKey);
-    showBubble(config?.hasApiKey ? t('apiSaveBubble') : t('apiSaveEmptyBubble'), 5000);
+    if (config && !config.encryptionAvailable && config.hasApiKey) {
+      showBubble(t('encryptionUnavailable'), 8000);
+    } else {
+      showBubble(config?.hasApiKey ? t('apiSaveBubble') : t('apiSaveEmptyBubble'), 5000);
+    }
   } catch {
     apiStatus.dataset.statusKey = 'saveFailed';
     apiStatus.textContent = t('saveFailed');
@@ -731,6 +973,18 @@ function startInlineMemoryEdit(item, type, memory) {
   input.select();
 }
 
+/** 格式化记忆时间戳：优先显示来源时间（用户发言时刻），精确到秒，附带时区 */
+function formatMemoryTime(memory) {
+  const rawTs = memory.sourceOccurredAt || memory.createdAt;
+  if (!rawTs) return '';
+  const d = new Date(rawTs);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  const formatted = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const tz = memory.writeTimezone || '';
+  return tz ? `${formatted} (${tz})` : formatted;
+}
+
 function renderMemoryList(type, memories) {
   const container = getMemoryContainer(type);
   const sourceMemories = Array.isArray(memories) ? memories : [];
@@ -763,6 +1017,9 @@ function renderMemoryList(type, memories) {
       content.textContent = memory.content || t('empty');
     }
 
+    // 显示秒级时间和时区
+    const timeStr = formatMemoryTime(memory);
+
     const edit = document.createElement('button');
     edit.className = 'memory-edit';
     edit.type = 'button';
@@ -787,6 +1044,12 @@ function renderMemoryList(type, memories) {
     });
 
     item.appendChild(content);
+    if (timeStr) {
+      const meta = document.createElement('div');
+      meta.className = 'memory-item__meta';
+      meta.textContent = timeStr;
+      item.appendChild(meta);
+    }
     item.appendChild(edit);
     item.appendChild(remove);
     container.appendChild(item);
@@ -825,20 +1088,44 @@ async function clearAllMemoryTypes() {
   }
 }
 
+async function exportMemoryData() {
+  try {
+    const result = await window.petAPI?.exportMemories?.();
+    if (!result?.success) {
+      if (result?.reason === 'cancelled') {
+        setStateStatus(t('exportCancelled'));
+      } else {
+        setStateStatus(t('exportFailed'));
+        showBubble(t('exportFailed'), 5000);
+      }
+      return;
+    }
+    setStateStatus(t('exportSuccess', { path: result.path }));
+    showBubble(t('exportSuccess', { path: result.path }), 5000);
+  } catch (e) {
+    setStateStatus(t('exportFailed'));
+    showBubble(t('exportFailed'), 5000);
+  }
+}
+
 async function loadStatePanel() {
   const loadToken = ++statePanelLoadToken;
   setStateStatus(t('loading'));
   try {
-    const [affection, petData, userMemories, longTermMemories, shortTermMemories] = await Promise.all([
+    const [affection, petData, userMemories, longTermMemories, shortTermMemories, archStatus, reminders] = await Promise.all([
       window.petAPI?.getAffection?.(),
       window.petAPI?.getPetData?.(),
       window.petAPI?.listMemories?.('user'),
       window.petAPI?.listMemories?.('longTerm'),
-      window.petAPI?.listMemories?.('shortTerm')
+      window.petAPI?.listMemories?.('shortTerm'),
+      window.petAPI?.getArchitectureStatus?.(),
+      window.petAPI?.listReminders?.()
     ]);
     if (loadToken !== statePanelLoadToken || statePanel.classList.contains('hidden')) return;
     const stats = petData?.prompt?.lastPromptStats || {};
 
+    renderArchStatus(archStatus);
+    renderRemindersList(reminders);
     setKeyValues(affectionView, [
       [t('affection'), `${affection?.score ?? 50} / 100`],
       [t('relationship'), affection?.level || 'familiar']
@@ -861,6 +1148,83 @@ async function loadStatePanel() {
   }
 }
 
+// 渲染 Agent 架构状态
+function renderArchStatus(status) {
+  if (!archStatusView) return;
+  if (!status) {
+    setKeyValues(archStatusView, [[t('archRuntime'), t('archStatusUnknown')]]);
+    return;
+  }
+  const isReady = status.state === 'langgraph_ready';
+  const items = [
+    [t('archRuntime'), isReady ? t('archLanggraph') : t('archLegacy')],
+    [t('archInitialized'), status.initialized ? '✓' : '✗'],
+    [t('archDatabase'), status.databaseReady ? '✓ ' + t('archConnected') : '✗'],
+    [t('archScheduler'), status.schedulerRunning ? '✓' : '✗'],
+    [t('archReflection'), status.reflectionWorkerRunning ? '✓' : '✗'],
+    [t('archCharacter'), status.activeCharacterId || t('archNone')],
+    [t('archSkills'), (status.registeredSkills || []).join(', ') || t('archNone')]
+  ];
+  if (!isReady && status.lastInitializationError) {
+    items.push([t('archError'), status.lastInitializationError]);
+  }
+  setKeyValues(archStatusView, items);
+  archStatusView.style.color = isReady ? '' : '#c0392b';
+}
+
+// 渲染提醒列表
+function renderRemindersList(reminders) {
+  if (!reminderList) return;
+  reminderList.innerHTML = '';
+  if (!reminders || reminders.length === 0) {
+    reminderList.textContent = t('noReminders');
+    return;
+  }
+  for (const r of reminders) {
+    const item = document.createElement('div');
+    item.className = 'memory-item';
+    const content = document.createElement('span');
+    content.textContent = `${r.content} — ${r.nextTriggerAt || r.triggerAt}`;
+    item.appendChild(content);
+    const delBtn = document.createElement('button');
+    delBtn.textContent = t('reminderDelete');
+    delBtn.style.marginLeft = '8px';
+    delBtn.addEventListener('click', async () => {
+      const result = await window.petAPI?.deleteReminder?.(r.id);
+      if (result?.deleted) {
+        await loadReminders();
+      }
+    });
+    item.appendChild(delBtn);
+    reminderList.appendChild(item);
+  }
+}
+
+async function loadReminders() {
+  try {
+    const reminders = await window.petAPI?.listReminders?.();
+    renderRemindersList(reminders);
+  } catch { /* ignore */ }
+}
+
+async function triggerDailyDigest() {
+  try {
+    const result = await window.petAPI?.triggerDigest?.();
+    if (result?.ok) {
+      showBubble(t('digestTriggered'), 3000);
+    } else {
+      showBubble(t('digestFailed'), 5000);
+    }
+  } catch {
+    showBubble(t('digestFailed'), 5000);
+  }
+}
+
+async function triggerReminderCheck() {
+  await loadReminders();
+  showBubble(t('reminderChecked'), 3000);
+}
+
 async function openStatePanel() {
   closeApiPanel();
   closeChatPanel();
@@ -876,13 +1240,117 @@ function closeStatePanel() {
   statePanel.classList.add('hidden');
 }
 
+// ===== Onboarding 首次配置面板 =====
+function openOnboardingPanel(message) {
+  closeApiPanel();
+  closeChatPanel();
+  closeStatePanel();
+  if (message && onboardingMessage) {
+    onboardingMessage.textContent = message;
+  }
+  if (onboardingPanel) {
+    onboardingPanel.classList.remove('hidden');
+  }
+}
+
+function closeOnboardingPanel() {
+  if (onboardingPanel && !onboardingPanel.classList.contains('hidden')) {
+    if (onboardingPanel.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+    onboardingPanel.classList.add('hidden');
+  }
+}
+
+async function submitOnboarding(event) {
+  event.preventDefault();
+  if (!onboardingForm) return;
+
+  const preferences = {
+    nickname: obNickname?.value?.trim() || '',
+    preferredName: obPreferredName?.value?.trim() || '',
+    replyLength: obReplyLength?.value || 'short',
+    proactiveLevel: obProactiveLevel?.value || 'medium',
+    weatherCity: obWeatherCity?.value?.trim() || '',
+    weatherEnabled: !!document.getElementById('obWeatherEnabled')?.checked,
+    dndEnabled: !!obDndEnabled?.checked,
+    systemNotificationEnabled: !!obNotificationEnabled?.checked,
+    soundEnabled: !!obSoundEnabled?.checked,
+    memoryEnabled: !!obMemoryEnabled?.checked
+  };
+
+  // DND 时间窗（固定 22:00-08:00，与 HTML 说明一致）
+  if (preferences.dndEnabled) {
+    preferences.dndStart = '22:00';
+    preferences.dndEnd = '08:00';
+  } else {
+    preferences.dndStart = '22:00';
+    preferences.dndEnd = '08:00';
+  }
+
+  const submitBtn = onboardingForm.querySelector('button[type="submit"]');
+  const originalText = submitBtn?.textContent;
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = '提交中...';
+  }
+
+  try {
+    const result = await window.petAPI?.submitOnboardingPreferences?.(preferences);
+    if (result?.ok && result?.completed) {
+      closeOnboardingPanel();
+      showBubble('初始化完成，很高兴认识你！', 7000);
+      setState('waving');
+      clearRestoreTimers();
+      restoreTimers = [setTimeout(() => setState('idle'), 6500)];
+    } else if (result?.ok && !result?.completed) {
+      // 还有后续步骤，保持面板开启
+      if (onboardingMessage) {
+        onboardingMessage.textContent = '请继续配置剩余选项。';
+      }
+    } else {
+      if (onboardingMessage) {
+        onboardingMessage.textContent = '提交失败，请重试。';
+      }
+    }
+  } catch (error) {
+    if (onboardingMessage) {
+      onboardingMessage.textContent = '提交出错，请重试。';
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = originalText || '完成配置';
+    }
+  }
+}
+
 function renderChatLog() {
   chatLog.innerHTML = '';
   const visibleItems = chatHistory.slice(-50);
   for (const item of visibleItems) {
     const entry = document.createElement('div');
-    entry.className = `chat-msg chat-msg--${item.role}`;
-    entry.textContent = item.content;
+    entry.className = `chat-msg chat-msg--${item.role}${item.tone ? ` chat-msg--${item.tone}` : ''}`;
+    const content = document.createElement('div');
+    content.className = 'chat-msg__content';
+    content.textContent = item.content;
+    entry.appendChild(content);
+    if (item.pendingShellAction) {
+      const actions = document.createElement('div');
+      actions.className = 'chat-msg__actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = t('safeShellCancel');
+      cancel.addEventListener('click', () => handlePendingShellAction(item, false));
+      const confirm = document.createElement('button');
+      confirm.type = 'button';
+      confirm.className = 'chat-msg__confirm';
+      confirm.textContent = item.pendingShellAction.label || t('send');
+      confirm.addEventListener('click', () => handlePendingShellAction(item, true));
+      actions.appendChild(cancel);
+      actions.appendChild(confirm);
+      entry.appendChild(actions);
+    }
     chatLog.appendChild(entry);
   }
   chatLog.scrollTop = chatLog.scrollHeight;
@@ -896,6 +1364,26 @@ function pushChat(role, content, options = {}) {
   renderChatLog();
 }
 
+async function handlePendingShellAction(item, shouldConfirm) {
+  const action = item?.pendingShellAction;
+  if (!action) return;
+  item.pendingShellAction = null;
+  renderChatLog();
+  try {
+    const result = shouldConfirm
+      ? await window.petAPI?.safeShell?.confirm?.(action.id)
+      : await window.petAPI?.safeShell?.cancel?.(action.id);
+    item.content = result?.reply || t('safeShellFailed');
+    item.tone = result?.ok ? 'normal' : 'danger';
+    showBubble(item.content, result?.ok ? 9000 : 6000);
+  } catch {
+    item.content = t('safeShellFailed');
+    item.tone = 'danger';
+  }
+  renderChatLog();
+  focusChatInput();
+}
+
 async function sendChatMessage(event) {
   event.preventDefault();
   const message = chatInput.value.trim();
@@ -907,35 +1395,16 @@ async function sendChatMessage(event) {
   clearRestoreTimers();
 
   try {
-    let memoryAnalysis = { ok: true, remembered: false, action: 'skip' };
-    try {
-      memoryAnalysis = await window.petAPI?.analyzeAndApplyMemory?.(message) || memoryAnalysis;
-    } catch {
-      memoryAnalysis = {
-        ok: false,
-        remembered: false,
-        message: t('memoryAiUnavailable')
-      };
-    }
-
-    if (memoryAnalysis.ok === false) {
+    const shellResult = await window.petAPI?.safeShell?.interpret?.(message);
+    if (shellResult?.handled) {
       pushChat('user', message, { excludeFromAi: true });
-      const unavailable = memoryAnalysis.message || t('memoryAiUnavailable');
-      pushChat('assistant', unavailable, { excludeFromAi: true });
-      showBubble(unavailable, 8000);
-      setState('failed');
-      restoreTimers = [setTimeout(() => setState('idle'), 4500)];
-      return;
-    }
-
-    if (memoryAnalysis.remembered) {
-      pushChat('user', message, { excludeFromAi: true });
-      const confirmation = memoryAnalysis.message || (
-        memoryAnalysis.type === 'longTerm' ? t('longTermMemorySaved') : t('userMemorySaved')
-      );
-      pushChat('assistant', confirmation, { excludeFromAi: true });
-      showBubble(confirmation, 7000);
-      setState('review');
+      pushChat('assistant', shellResult.reply || t('safeShellFailed'), {
+        excludeFromAi: true,
+        tone: shellResult.tone || (shellResult.ok ? 'question' : 'danger'),
+        pendingShellAction: shellResult.pendingAction || null
+      });
+      showBubble(shellResult.reply || t('safeShellFailed'), 9000);
+      setState(shellResult.ok ? 'review' : 'failed');
       restoreTimers = [setTimeout(() => setState('idle'), 4500)];
       return;
     }
@@ -943,6 +1412,12 @@ async function sendChatMessage(event) {
     pushChat('user', message);
     setState('waiting');
     showBubble(t('thinking'), 6000);
+
+    try {
+      await window.petAPI?.analyzeAndApplyMemory?.(message);
+    } catch {
+      // 记忆分析失败不阻断聊天，继续发送角色回复
+    }
     const result = await window.petAPI?.sendChat?.({
       message,
       history: chatHistory.filter((item) => !item.excludeFromAi).slice(0, -1)
@@ -950,8 +1425,8 @@ async function sendChatMessage(event) {
     const reply = result?.reply || t('emptyReply');
     pushChat('assistant', reply);
     showBubble(reply, 14000);
-    setState('waving');
-    restoreTimers = [setTimeout(() => setState('idle'), 6500)];
+    setState(getResponseAnimationState(result?.emotion));
+    restoreTimers = [setTimeout(() => setState('idle'), getResponseAnimationDuration())];
   } catch {
     const fallback = t('apiFailed');
     pushChat('assistant', fallback);
@@ -994,6 +1469,10 @@ bindEvent(clearUserMemory, 'click', () => clearMemoryType('user'));
 bindEvent(clearLongTermMemory, 'click', () => clearMemoryType('longTerm'));
 bindEvent(clearShortTermMemory, 'click', () => clearMemoryType('shortTerm'));
 bindEvent(clearAllMemory, 'click', clearAllMemoryTypes);
+bindEvent(exportMemory, 'click', exportMemoryData);
+bindEvent(refreshReminders, 'click', loadReminders);
+bindEvent(triggerDailyDigestBtn, 'click', triggerDailyDigest);
+bindEvent(triggerReminderCheckBtn, 'click', triggerReminderCheck);
 
 bindEvent(stage, 'pointerdown', startDragAnimation);
 window.addEventListener('pointerup', stopDragAnimation);
@@ -1022,6 +1501,43 @@ window.petAPI?.onSetReminderMinutes?.((minutes) => {
 });
 window.petAPI?.onVisibilityMode?.(setVisibilityMode);
 window.petAPI?.onShowApiSettings?.(openApiPanel);
+// 主动事件（提醒到期、日报、每日问候）由 GraphDispatcher 推送
+window.petAPI?.onProactiveEvent?.((dto) => {
+  if (!dto) return;
+  const message = dto.text || '';
+  const isReminder = !!dto.reminderOccurrenceId;
+  // 所有主动消息（提醒、开机问候、每日问候、天气摘要等）统一显示在桌宠左侧的提醒气泡
+  if (message) {
+    showReminderBubble(message, 20000);
+  }
+  // 设置角色表情和动作（来自 ProactiveGraph 的 expression/motion）
+  if (dto.expression) {
+    clearRestoreTimers();
+    setState(dto.expression);
+    restoreTimers = [setTimeout(() => setState('idle'), 6500)];
+  }
+  // 确认气泡已显示，回传 ACK 给主进程（携带 occurrenceId）
+  // 主进程收到 ACK 后才标记投递成功，避免窗口重载/崩溃导致丢失
+  if (dto.reminderOccurrenceId) {
+    window.petAPI?.ackProactiveEvent?.(dto.reminderOccurrenceId);
+  }
+});
+// Onboarding 请求（首次配置由 Graph 推送给用户）
+window.petAPI?.onOnboardingRequest?.((dto) => {
+  if (!dto) return;
+  const message = dto.text || '请输入你的昵称和称呼偏好。';
+  openOnboardingPanel(message);
+  if (dto.expression) {
+    clearRestoreTimers();
+    setState(dto.expression);
+    restoreTimers = [setTimeout(() => setState('idle'), 6500)];
+  }
+});
+
+// Onboarding 表单提交
+if (onboardingForm) {
+  onboardingForm.addEventListener('submit', submitOnboarding);
+}
 
 applyPetProfile();
 applyLanguage();

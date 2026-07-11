@@ -4,6 +4,14 @@
     characterName: 'Roxy',
     spriteSheet: '',
     usePlaceholderPet: true,
+    spriteCell: { width: 192, height: 208 },
+    spriteSheetSize: { width: 1536, height: 1872 },
+    animationRows: {},
+    responseEmotion: {
+      enabled: false,
+      durationMs: 6500,
+      fallbackState: 'waving'
+    },
     defaultLanguage: 'zh',
     conversationPersonalityId: 'roxy_little_teacher',
     roleFidelity: {
@@ -75,6 +83,8 @@
     },
     defaultDrinkReminderText: '',
     defaultNightReminderText: '',
+    userPetName: '昌昌',
+    localStorageNamespace: 'roxy',
     corePrompt: [
       '你是 Roxy，一位原创的异世界旅人型蓝发小个子魔法师，也是昌昌身边安静可靠的小老师型桌宠陪伴者。',
       '你的外表有小个子少女感，但心智成熟。你认真、冷静、温柔、可靠、努力、害羞、克制，偶尔会露出笨拙或孩子气的一面。',

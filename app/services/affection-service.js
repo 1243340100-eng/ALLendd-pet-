@@ -1,5 +1,10 @@
 const crypto = require('crypto');
 const { loadPetData, updatePetData } = require('./pet-data-store');
+const petProfile = require('../config/pet-profile');
+
+const characterName = String(petProfile.characterName || 'Pet').trim();
+const escapedName = characterName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const praiseNamePattern = new RegExp(`${escapedName}\u771f\u597d`, 'u');
 
 const MIN_SCORE = 0;
 const MAX_SCORE = 100;
@@ -172,8 +177,9 @@ function detectAffectionEvent(text) {
 
   const positiveRules = [
     { pattern: /(谢谢你|谢谢|辛苦了|麻烦你了)/u, delta: 1, eventType: 'thanks', reason: 'User expressed thanks.' },
-    { pattern: /(你真好|你很好|你很可爱|你真可爱|你很棒|你真棒|roxy真好|Roxy真好)/u, delta: 2, eventType: 'praise', reason: 'User praised Roxy.' },
-    { pattern: /(和你聊天很开心|跟你聊天很开心|有你陪着很开心|和你说话很开心)/u, delta: 2, eventType: 'companionship_positive', reason: 'User enjoyed Roxy companionship.' },
+    { pattern: /(你真好|你很好|你很可爱|你真可爱|你很棒|你真棒)/u, delta: 2, eventType: 'praise', reason: 'User praised the pet.' },
+    { pattern: praiseNamePattern, delta: 2, eventType: 'praise', reason: `User praised ${characterName}.` },
+    { pattern: /(和你聊天很开心|跟你聊天很开心|有你陪着很开心|和你说话很开心)/u, delta: 2, eventType: 'companionship_positive', reason: 'User enjoyed pet companionship.' },
     { pattern: /(我喝水了|已经喝水了|我吃药了|已经吃药了|我完成了|我做完了)/u, delta: 1, eventType: 'reminder_completed', reason: 'User completed a reminder or agreement.' }
   ];
 
@@ -184,7 +190,7 @@ function detectAffectionEvent(text) {
   }
 
   const negativeRules = [
-    { pattern: /(傻逼|蠢货|废物|滚开|闭嘴)/u, delta: -3, eventType: 'insult', reason: 'User insulted Roxy.' },
+    { pattern: /(傻逼|蠢货|废物|滚开|闭嘴)/u, delta: -3, eventType: 'insult', reason: 'User insulted the pet.' },
     { pattern: /(别烦我|烦死了|不想理你|懒得理你)/u, delta: -2, eventType: 'annoyed', reason: 'User expressed annoyance.' },
     { pattern: /(离我远点|别陪我|不需要你陪|少管我)/u, delta: -2, eventType: 'companionship_rejected', reason: 'User rejected companionship harshly.' }
   ];

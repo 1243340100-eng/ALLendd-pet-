@@ -1,16 +1,19 @@
-const { app, BrowserWindow, Menu, ipcMain, safeStorage, screen } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, safeStorage, screen, protocol, net, dialog } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { loadPetData, updatePetData } = require('./services/pet-data-store');
+const { loadPetData, updatePetData, atomicWriteJson, readJsonWithFallback } = require('./services/pet-data-store');
 const memoryService = require('./services/memory-service');
 const affectionService = require('./services/affection-service');
-const { buildRoxyPrompt } = require('./services/prompt-builder');
+const { SafeShellService } = require('./services/safe-shell-service');
+const { buildPetPrompt } = require('./services/prompt-builder');
 const petProfile = require('./config/pet-profile');
 const {
   handleUserMessage: handleHarnessUserMessage,
   getPersonalityProfile,
-  normalizeConversationState
+  normalizeConversationState,
+  runPostCheck,
+  rewriteWithPostCheck
 } = require('./services/conversation-harness');
 const {
   getDefaultTokenBudget,
@@ -18,6 +21,320 @@ const {
   trimMessagesByBudget,
   buildPromptBudgetReport
 } = require('./services/token-budget');
+const { classifyResponseEmotion } = require('./services/response-emotion-service');
+
+// === 新架构集成（src/ → dist/） ===
+// 运行时状态：loading → langgraph_ready | initialization_failed
+// initialization_failed 时回退到旧链路，并在 UI 明确提示
+let archState = 'loading';
+let archInitError = null;
+let newArch = null;
+try {
+  newArch = require('../dist/main/integration.js');
+} catch (error) {
+  archState = 'initialization_failed';
+  archInitError = `Module load failed: ${error?.message || String(error)}`;
+  console.error('[integration] new architecture module not loaded:', archInitError);
+}
+
+// 加载 IPC Schema 校验器
+let ipcSchema = null;
+try {
+  ipcSchema = require('../dist/shared/schemas/ipc.js');
+} catch (error) {
+  console.warn('[integration] ipc schema not loaded, validation disabled:', error?.message || error);
+}
+
+/**
+ * 校验 IPC 输入。校验失败时抛出 Error（含错误详情）。
+ * 对应架构计划第 1 节"所有 IPC 输入经过 Schema 校验"。
+ */
+function validateIpc(channel, input) {
+  if (!ipcSchema?.validateIpcInput) return input; // 校验器未加载时放行（开发模式）
+  const result = ipcSchema.validateIpcInput(channel, input);
+  if (!result.valid) {
+    const issues = result.issues.map((i) => `${i.path}: ${i.message}`).join('; ');
+    throw new Error(`IPC validation failed for ${channel}: ${issues}`);
+  }
+  return result.data;
+}
+
+let newArchReady = false;
+
+/**
+ * 包装旧 readApiConfig/saveApiConfig 为 SecretStore 接口。
+ * 新架构 ModelGateway 通过此接口读取 API Key（沿用 safeStorage 加密）。
+ */
+function createSecretStoreAdapter() {
+  return {
+    read() {
+      const cfg = readApiConfig({ includeSecret: true });
+      if (!cfg.apiKey) return null;
+      return {
+        provider: cfg.provider,
+        endpoint: cfg.endpoint,
+        model: cfg.model,
+        apiKey: cfg.apiKey
+      };
+    },
+    write(nextConfig) {
+      saveApiConfig(nextConfig);
+    },
+    clear() {
+      saveApiConfig({ clearApiKey: true });
+    },
+    isEncrypted() {
+      return safeStorage.isEncryptionAvailable();
+    }
+  };
+}
+
+/**
+ * 将架构状态写入 userData/architecture-status.json，便于排查初始化失败。
+ * 不包含 API Key 等敏感信息。
+ */
+function saveArchitectureStatus() {
+  try {
+    const statusFile = path.join(app.getPath('userData'), 'architecture-status.json');
+    const status = {
+      timestamp: new Date().toISOString(),
+      state: archState,
+      newArchLoaded: !!newArch,
+      newArchReady,
+      error: archInitError
+    };
+    fs.writeFileSync(statusFile, JSON.stringify(status, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('[integration] failed to save architecture status:', e?.message);
+  }
+}
+
+/**
+ * 初始化新架构。在 app.whenReady 之后调用。
+ * 失败时标记 initialization_failed，记录错误，但不阻塞旧链路。
+ */
+function tryInitNewArchitecture() {
+  if (!newArch) {
+    archState = 'initialization_failed';
+    saveArchitectureStatus();
+    return;
+  }
+  try {
+    newArch.initNewArchitecture({
+      isPackaged: app.isPackaged,
+      userDataDir: app.getPath('userData'),
+      resourcesDir: process.resourcesPath,
+      appRoot: app.getAppPath(),
+      secretStore: createSecretStoreAdapter(),
+      onRendererCallback: (dto, channel) => {
+        return deliverToRendererWithAck(dto, channel);
+      }
+    });
+    newArch.startScheduler();
+    newArchReady = true;
+    archState = 'langgraph_ready';
+    archInitError = null;
+    console.log('[integration] new architecture ready');
+    saveArchitectureStatus();
+  } catch (error) {
+    archState = 'initialization_failed';
+    archInitError = `Init failed: ${error?.message || String(error)}`;
+    console.error('[integration] init failed:', archInitError);
+    newArchReady = false;
+    saveArchitectureStatus();
+  }
+}
+
+// ===== pet-character:// 自定义协议 =====
+// 注册为特权协议，允许 renderer 通过 background-image 加载角色包精灵图
+// 必须在 app.whenReady() 之前调用
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'pet-character',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true
+  }
+}]);
+
+/**
+ * 注册 pet-character:// 协议处理器。
+ * URL 格式：pet-character://<characterId>/<relative-path>
+ * 解析为当前激活角色包目录内的文件，限制路径穿越。
+ */
+function registerCharacterProtocol() {
+  protocol.handle('pet-character', (request) => {
+    const url = new URL(request.url);
+    // url.hostname = characterId, url.pathname = /relative/path
+    const relativePath = decodeURIComponent(url.pathname).replace(/^\//, '');
+
+    if (!relativePath) {
+      return new Response('Bad Request: no path', { status: 400 });
+    }
+
+    // 从新架构获取当前激活角色包路径
+    const packPath = newArch?.getActiveCharacterPackPath?.();
+    if (!packPath) {
+      return new Response('Not Found: no active character pack', { status: 404 });
+    }
+
+    const fullPath = path.resolve(packPath, relativePath);
+    // 路径穿越检查：确保解析后的路径在角色包目录内
+    const relative = path.relative(packPath, fullPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return new Response('Forbidden: path escapes pack directory', { status: 403 });
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      return new Response('Not Found', { status: 404 });
+    }
+
+    // 返回文件流
+    const fileStream = fs.createReadStream(fullPath);
+    return new Response(fileStream, {
+      headers: { 'Content-Type': getMimeType(fullPath) }
+    });
+  });
+}
+
+/** 根据文件扩展名返回 MIME 类型 */
+function getMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeMap = {
+    '.webp': 'image/webp',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.json': 'application/json',
+    '.md': 'text/markdown'
+  };
+  return mimeMap[ext] || 'application/octet-stream';
+}
+
+/**
+ * 向 renderer 发送角色渲染配置。
+ * 在窗口加载完成后调用，使 renderer 使用角色包的 spritesheet 替代默认 placeholder。
+ */
+function sendCharacterRenderConfig() {
+  if (!newArchReady || !newArch?.getCharacterRenderConfig) return;
+  try {
+    const config = newArch.getCharacterRenderConfig();
+    if (config && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('character-config', config);
+      console.log('[integration] character config sent to renderer:', config.characterId);
+    }
+  } catch (error) {
+    console.error('[integration] failed to send character config:', error?.message || error);
+  }
+}
+
+// === Renderer ACK 机制 ===
+// 主动事件（pet_bubble）需要 renderer 确认实际显示后才算投递成功。
+// 主进程发送 proactive-event 后，等待 renderer 回调 proactive-event:ack。
+// 超时（5 秒）或窗口销毁则视为失败，Dispatcher 会保持 delivered=false 以便重试。
+const ACK_TIMEOUT_MS = 5000;
+/** @type {Map<string, {resolve: (v: boolean) => void, reject: (e: Error) => void, timer: NodeJS.Timeout}>} */
+const pendingAcks = new Map();
+
+/**
+ * 将 DTO 发送到 renderer，对于 proactive-event 通道等待 ACK。
+ * 返回 Promise<boolean>：true=已确认显示，false=超时/窗口销毁/非主动事件。
+ */
+function deliverToRendererWithAck(dto, channel) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return Promise.resolve(false);
+  }
+
+  // 非主动事件通道直接发送，不等待 ACK
+  if (channel !== 'proactive-event') {
+    mainWindow.webContents.send(channel, dto);
+    return Promise.resolve(true);
+  }
+
+  // 主动事件：需要 ACK 确认
+  const occurrenceId = dto?.reminderOccurrenceId;
+  if (!occurrenceId) {
+    // 没有投递 ID，无法追踪 ACK，直接发送并视为成功
+    mainWindow.webContents.send(channel, dto);
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    // 如果已存在相同 ID 的 pending ACK，先超时旧的
+    const existing = pendingAcks.get(occurrenceId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      pendingAcks.delete(occurrenceId);
+      existing.resolve(false);
+    }
+
+    const timer = setTimeout(() => {
+      if (pendingAcks.has(occurrenceId)) {
+        pendingAcks.delete(occurrenceId);
+        console.warn(`[ack] timeout for ${occurrenceId}`);
+        resolve(false);
+      }
+    }, ACK_TIMEOUT_MS);
+
+    pendingAcks.set(occurrenceId, { resolve, timer });
+
+    // 发送到 renderer
+    try {
+      mainWindow.webContents.send(channel, dto);
+    } catch (error) {
+      clearTimeout(timer);
+      pendingAcks.delete(occurrenceId);
+      resolve(false);
+    }
+  });
+}
+
+// 窗口销毁时，拒绝所有 pending ACK
+function rejectAllPendingAcks() {
+  for (const [id, entry] of pendingAcks) {
+    clearTimeout(entry.timer);
+    entry.resolve(false);
+  }
+  pendingAcks.clear();
+}
+
+/**
+ * 使用新架构处理聊天消息。
+ * 抛出 Error 表示本轮处理失败，由调用方决定是否回退。
+ * 不再静默返回 null 并回退到旧链路。
+ */
+async function sendChatMessageNewArch(payload) {
+  if (!newArch || !newArchReady) throw new Error('new architecture not ready');
+  const userId = newArch.getUserId?.() || 'default-user';
+  const characterId = (newArch.getCharacterPackManager?.()?.getActiveCharacterId?.()) || 'default';
+  const message = String(payload?.message || '').trim();
+  if (!message) throw new Error('empty message');
+
+  const dto = await newArch.handleChatMessage(userId, characterId, message);
+  if (!dto) throw new Error('ConversationGraph returned null');
+
+  // 映射 ResponseDTO → 旧 renderer 期望的格式
+  return {
+    reply: dto.text,
+    model: 'new-arch',
+    emotion: dto.expression || null,
+    emotionSource: dto.expression ? 'new-arch' : null,
+    postCheck: null,
+    postCheckRewritten: false
+  };
+}
+
+const NETWORK_TIMEOUT_MS = 30000;
+
+function fetchWithTimeout(url, options = {}, timeoutMs = NETWORK_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
 
 let mainWindow;
 let alwaysOnTop = true;
@@ -28,6 +345,7 @@ let fullscreenProbeProcess = null;
 let fullscreenProbeBuffer = '';
 let hiddenForFullscreen = false;
 let isQuitting = false;
+let safeShellService = null;
 
 const startSize = { width: 300, height: 360 };
 const minScale = 0.35;
@@ -40,8 +358,22 @@ const defaultApiConfig = {
 };
 const profileSummaryIntervalMs = 3 * 24 * 60 * 60 * 1000;
 
+function getSafeShellService() {
+  if (!safeShellService) {
+    const workingRoot = process.env.SAFE_SHELL_TEST_ROOT
+      ? path.resolve(process.env.SAFE_SHELL_TEST_ROOT)
+      : app.isPackaged
+        ? path.dirname(process.execPath)
+        : app.getAppPath();
+    safeShellService = new SafeShellService({ app, workingRoot });
+  }
+  return safeShellService;
+}
+
+const userPetName = petProfile.userPetName || '用户';
+
 const text = {
-  hydrateNow: '\u7acb\u5373\u63d0\u9192\u660c\u660c\u559d\u6c34',
+  hydrateNow: `\u7acb\u5373\u63d0\u9192${userPetName}\u559d\u6c34`,
   nightNow: '\u7acb\u5373\u6d4b\u8bd5\u665a\u5b89\u63d0\u9192',
   stateIdle: '\u72b6\u6001\uff1a\u4f11\u606f',
   stateWave: '\u72b6\u6001\uff1a\u6325\u624b\u63d0\u9192',
@@ -91,6 +423,15 @@ function createWindow() {
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   lastWindowX = mainWindow.getBounds().x;
+
+  // 窗口加载完成后发布 startup 事件（触发 Onboarding 或日报）
+  mainWindow.webContents.once('did-finish-load', () => {
+    // 先发送角色渲染配置，使 renderer 使用角色包 spritesheet
+    sendCharacterRenderConfig();
+    if (newArchReady && newArch?.publishStartupEvent) {
+      newArch.publishStartupEvent();
+    }
+  });
 
   mainWindow.on('move', () => {
     const { x } = mainWindow.getBounds();
@@ -157,6 +498,14 @@ function createWindow() {
   });
 
   startFullscreenWatcher();
+
+  // 窗口关闭/崩溃时，拒绝所有 pending ACK，避免 Dispatcher 永久等待
+  mainWindow.on('closed', () => {
+    rejectAllPendingAcks();
+  });
+  mainWindow.webContents.on('render-process-gone', () => {
+    rejectAllPendingAcks();
+  });
 }
 
 function send(channel, payload) {
@@ -192,57 +541,98 @@ function getApiConfigPath() {
   return path.join(app.getPath('userData'), 'api-config.json');
 }
 
+const KNOWN_PROVIDER_ENDPOINTS = {
+  deepseek: 'https://api.deepseek.com/v1/chat/completions',
+  openai: 'https://api.openai.com/v1/chat/completions',
+  anthropic: 'https://api.anthropic.com/v1/messages',
+  minimax: 'https://api.minimax.chat/v1/text/chatcompletion_v2'
+};
+
+let sessionApiKey = '';
+
 function encodeApiKey(apiKey) {
   if (!apiKey) return '';
   if (safeStorage.isEncryptionAvailable()) {
     return safeStorage.encryptString(apiKey).toString('base64');
   }
-  return Buffer.from(apiKey, 'utf8').toString('base64');
+  sessionApiKey = apiKey;
+  return '';
 }
 
 function decodeApiKey(value, encrypted = true) {
   if (!value) return '';
   try {
-    const buffer = Buffer.from(value, 'base64');
-    if (encrypted && safeStorage.isEncryptionAvailable()) {
-      return safeStorage.decryptString(buffer);
+    if (!encrypted || !safeStorage.isEncryptionAvailable()) {
+      return '';
     }
-    return buffer.toString('utf8');
+    const buffer = Buffer.from(value, 'base64');
+    return safeStorage.decryptString(buffer);
   } catch {
     return '';
   }
 }
 
-function readApiConfig(options = {}) {
-  let saved = {};
-  try {
-    saved = JSON.parse(fs.readFileSync(getApiConfigPath(), 'utf8'));
-  } catch {
-    saved = {};
+function getStoredApiKey(saved, options) {
+  if (safeStorage.isEncryptionAvailable()) {
+    return decodeApiKey(saved.apiKey, saved.encrypted !== false);
   }
-  const apiKey = decodeApiKey(saved.apiKey, saved.encrypted !== false);
+  if (options.includeSecret) {
+    return sessionApiKey;
+  }
+  return '';
+}
+
+function validateEndpoint(endpoint) {
+  const trimmed = String(endpoint || '').trim();
+  if (!trimmed) return { valid: false, reason: 'Endpoint is empty.' };
+
+  let url;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return { valid: false, reason: 'Endpoint is not a valid URL.' };
+  }
+
+  const isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+  if (url.protocol !== 'https:' && !isLocalhost) {
+    return { valid: false, reason: 'Endpoint must use HTTPS. Localhost is allowed for development.' };
+  }
+
+  return { valid: true };
+}
+
+function readApiConfig(options = {}) {
+  const result = readJsonWithFallback(getApiConfigPath());
+  const saved = result.data || {};
+  const apiKey = getStoredApiKey(saved, options);
   return {
     provider: saved.provider || defaultApiConfig.provider,
     endpoint: saved.endpoint || defaultApiConfig.endpoint,
     model: saved.model || defaultApiConfig.model,
     hasApiKey: Boolean(apiKey),
-    apiKey: options.includeSecret ? apiKey : ''
+    apiKey: options.includeSecret ? apiKey : '',
+    encryptionAvailable: safeStorage.isEncryptionAvailable()
   };
 }
 
 function saveApiConfig(nextConfig = {}) {
   const current = readApiConfig({ includeSecret: true });
+  const nextEndpoint = String(nextConfig.endpoint || current.endpoint || defaultApiConfig.endpoint).trim();
+  const validation = validateEndpoint(nextEndpoint);
+  if (!validation.valid) {
+    throw new Error(validation.reason);
+  }
+
   const nextKey = nextConfig.clearApiKey ? '' : String(nextConfig.apiKey || current.apiKey || '').trim();
   const encrypted = safeStorage.isEncryptionAvailable();
   const payload = {
     provider: String(nextConfig.provider || defaultApiConfig.provider).trim(),
-    endpoint: String(nextConfig.endpoint || defaultApiConfig.endpoint).trim(),
+    endpoint: nextEndpoint,
     model: String(nextConfig.model || defaultApiConfig.model).trim(),
     encrypted,
     apiKey: encodeApiKey(nextKey)
   };
-  fs.mkdirSync(app.getPath('userData'), { recursive: true });
-  fs.writeFileSync(getApiConfigPath(), JSON.stringify(payload, null, 2), 'utf8');
+  atomicWriteJson(getApiConfigPath(), payload);
   return readApiConfig();
 }
 
@@ -279,10 +669,13 @@ function saveHarnessState(nextState) {
 }
 
 function getFallbackSystemPrompt(warnings = []) {
+  const characterName = petProfile.characterName || 'Pet';
+  const coreFallback = String(petProfile.corePrompt || '').trim()
+    ? String(petProfile.corePrompt).split('\n').map((line) => line.trim()).filter(Boolean)
+    : [`你是 ${characterName}，一个小小的桌面宠物和陪伴助手。`];
   const prompt = [
     '\u3010\u89d2\u8272\u6838\u5fc3\u8bbe\u5b9a\u3011',
-    '\u4f60\u662f Roxy\uff0c\u4e00\u4e2a\u5c0f\u5c0f\u7684\u684c\u9762\u5ba0\u7269\u548c\u966a\u4f34\u52a9\u624b\u3002',
-    '\u4f60\u7684\u8bed\u6c14\u6e29\u67d4\u3001\u793c\u8c8c\u3001\u6c89\u7a33\uff0c\u50cf\u4e00\u4f4d\u8010\u5fc3\u7684\u8001\u5e08\u3002',
+    ...coreFallback,
     '\u3010\u56de\u590d\u98ce\u683c\u3011',
     '\u7528\u7b80\u77ed\u81ea\u7136\u7684\u4e2d\u6587\u56de\u590d\uff0c\u901a\u5e38\u4e0d\u8d85\u8fc7 80 \u4e2a\u5b57\uff0c\u9002\u5408\u663e\u793a\u5728\u684c\u5ba0\u6c14\u6ce1\u91cc\u3002',
     '\u3010\u5b89\u5168\u4e0e\u8fb9\u754c\u3011',
@@ -340,27 +733,6 @@ function getMemoryAnalysisSkippedResult(reason = 'not_memory_worthy') {
     message: '',
     reason
   };
-}
-
-function buildMemoryConfirmation(applied = []) {
-  if (applied.length > 1) {
-    return '\u6211\u660e\u767d\u4e86\uff0c\u8fd9\u51e0\u4ef6\u4e8b\u6211\u4f1a\u5206\u5f00\u8bb0\u597d\uff0c\u4e0d\u628a\u5b83\u4eec\u6df7\u5728\u4e00\u8d77\u3002';
-  }
-
-  const first = applied[0] || {};
-  const entry = first.entry || {};
-  const reminder = entry.reminder && typeof entry.reminder === 'object' ? entry.reminder : null;
-
-  if (first.action === 'update') {
-    return '\u6211\u61c2\u4e86\uff0c\u4e4b\u524d\u90a3\u6761\u6211\u5df2\u7ecf\u66ff\u4f60\u6539\u597d\u4e86\u3002';
-  }
-  if (first.type === 'longTerm' && reminder?.enabled) {
-    return '\u55ef\uff0c\u8fd9\u6761\u63d0\u9192\u6211\u8bb0\u4e0b\u4e86\uff0c\u4e4b\u540e\u4f1a\u6309\u5b83\u6765\u63d0\u9192\u4f60\u3002';
-  }
-  if (first.type === 'longTerm') {
-    return '\u55ef\uff0c\u8fd9\u4ef6\u4e8b\u6211\u8bb0\u4e0b\u6765\u4e86\uff0c\u4ee5\u540e\u804a\u5230\u65f6\u6211\u4f1a\u63a5\u4e0a\u524d\u6587\u3002';
-  }
-  return '\u597d\u7684\uff0c\u6211\u8bb0\u4f4f\u4e86\u3002\u8fd9\u4f1a\u5e2e\u6211\u4ee5\u540e\u66f4\u597d\u5730\u7406\u89e3\u4f60\u3002';
 }
 
 function summarizeMemoriesForAnalysis(memory = {}) {
@@ -678,7 +1050,7 @@ function correctOneTimeReminderDecision(decision, userText) {
 }
 
 async function callMemoryAnalysisApi(config, userText, existingMemories) {
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -704,7 +1076,7 @@ async function callMemoryAnalysisApi(config, userText, existingMemories) {
 }
 
 async function callUserProfileAnalysisApi(config, userText, existingMemories, profileReason = '') {
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -730,7 +1102,7 @@ async function callUserProfileAnalysisApi(config, userText, existingMemories, pr
 }
 
 async function callShortTermAnalysisApi(config, userText, activeShortTerm) {
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -756,7 +1128,7 @@ async function callShortTermAnalysisApi(config, userText, activeShortTerm) {
 }
 
 async function callProfileSummaryApi(config, existingMemories) {
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -828,7 +1200,7 @@ function buildShortTermSedimentationMessages(segment, existingMemories) {
 }
 
 async function callSedimentationApi(config, segment, existingMemories) {
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -1045,7 +1417,6 @@ async function analyzeAndApplyMemory(textValue) {
         type: item.type,
         entry: item.entry
       })),
-      message: buildMemoryConfirmation(appliedMemories),
       reason: normalizedDecisions.map((item) => item.reason).filter(Boolean).join('; ')
     };
   } catch (error) {
@@ -1053,6 +1424,28 @@ async function analyzeAndApplyMemory(textValue) {
     return shouldAnalyzeLongTerm
       ? getMemoryAnalysisUnavailableResult('memory_ai_failed')
       : getMemoryAnalysisSkippedResult('short_term_ai_failed');
+  }
+}
+
+function applyFinalPostCheck(reply, harnessResult) {
+  if (!harnessResult) {
+    return { reply, postCheck: null, rewritten: false };
+  }
+  try {
+    const postCheck = runPostCheck(
+      reply,
+      harnessResult.analysis,
+      harnessResult.policy,
+      harnessResult.plan
+    );
+    if (!postCheck.shouldRewrite) {
+      return { reply, postCheck, rewritten: false };
+    }
+    const rewritten = rewriteWithPostCheck(reply, postCheck, harnessResult.policy);
+    return { reply: rewritten, postCheck, rewritten: true };
+  } catch (error) {
+    console.warn('Final reply post-check failed; returning original reply.', error?.message || error);
+    return { reply, postCheck: null, rewritten: false };
   }
 }
 
@@ -1104,7 +1497,7 @@ async function sendChatMessage(payload = {}) {
       ...petData.affection,
       promptHint: affectionService.getAffectionPromptHint(petData.affection)
     };
-    promptBuild = buildRoxyPrompt({
+    promptBuild = buildPetPrompt({
       userText,
       memories: petData.memory,
       affection: affectionState,
@@ -1114,7 +1507,7 @@ async function sendChatMessage(payload = {}) {
     });
   } catch {
     try {
-      promptBuild = buildRoxyPrompt({
+      promptBuild = buildPetPrompt({
         userText,
         memories: {},
         historyMessages,
@@ -1156,7 +1549,7 @@ async function sendChatMessage(payload = {}) {
     { role: 'user', content: userText.slice(0, 1000) }
   ];
 
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -1182,9 +1575,22 @@ async function sendChatMessage(payload = {}) {
     throw new Error('API response did not include a reply.');
   }
 
+  const normalizedReply = String(reply).trim().slice(0, 600);
+  const { reply: finalReply, postCheck: finalPostCheck, rewritten: finalRewritten } = applyFinalPostCheck(
+    normalizedReply,
+    harnessResult
+  );
+  const emotionResult = petProfile.responseEmotion?.enabled
+    ? await classifyResponseEmotion(config, userText, finalReply, (url, opts) => fetchWithTimeout(url, opts, 8000))
+    : null;
+
   return {
-    reply: String(reply).trim().slice(0, 600),
-    model: data.model || config.model
+    reply: finalReply,
+    model: data.model || config.model,
+    emotion: emotionResult?.emotion || null,
+    emotionSource: emotionResult?.source || null,
+    postCheck: finalPostCheck,
+    postCheckRewritten: finalRewritten
   };
 }
 
@@ -1235,6 +1641,8 @@ function stopFullscreenWatcher() {
 function setHiddenForFullscreen(shouldHide) {
   if (!mainWindow || mainWindow.isDestroyed() || hiddenForFullscreen === shouldHide) return;
   hiddenForFullscreen = shouldHide;
+  // 同步全屏状态到新架构的 FullscreenAdapter（供 ProactiveGraph 使用）
+  try { newArch?.getFullscreenAdapter?.()?.setFullscreen?.(shouldHide); } catch { /* 忽略 */ }
   if (shouldHide) {
     send('visibility-mode', false);
     mainWindow.hide();
@@ -1289,8 +1697,9 @@ while ($true) {
 }
 
 ipcMain.handle('set-window-scale', (_event, scale) => {
+  const validated = validateIpc('set-window-scale', scale);
   if (!mainWindow) return;
-  const next = Math.max(minScale, Math.min(maxScale, Number(scale) || 1));
+  const next = Math.max(minScale, Math.min(maxScale, Number(validated) || 1));
   const bounds = mainWindow.getBounds();
   const nextWidth = Math.round(startSize.width * next);
   const nextHeight = Math.round(startSize.height * next);
@@ -1316,63 +1725,284 @@ ipcMain.handle('window:focus', () => {
   return mainWindow.isFocused();
 });
 
+// Renderer ACK：确认主动事件气泡已显示，解除 pending ACK 等待
+ipcMain.handle('proactive-event:ack', (_event, occurrenceId) => {
+  const validated = validateIpc('proactive-event:ack', occurrenceId);
+  if (!validated || typeof validated !== 'string') return false;
+  const entry = pendingAcks.get(validated);
+  if (!entry) return false;
+  clearTimeout(entry.timer);
+  pendingAcks.delete(validated);
+  entry.resolve(true);
+  return true;
+});
+
 ipcMain.handle('api-config-get', () => readApiConfig());
 
-ipcMain.handle('api-config-save', (_event, nextConfig) => saveApiConfig(nextConfig));
+ipcMain.handle('api-config-save', (_event, nextConfig) => {
+  const validated = validateIpc('api-config-save', nextConfig);
+  return saveApiConfig(validated);
+});
 
-ipcMain.handle('chat-send', (_event, payload) => sendChatMessage(payload));
+ipcMain.handle('chat-send', async (_event, payload) => {
+  const validated = validateIpc('chat-send', payload);
+  // 新架构就绪时，ConversationGraph 单轮报错不得静默改走旧 sendChatMessage
+  if (archState === 'langgraph_ready' && newArchReady) {
+    try {
+      const result = await sendChatMessageNewArch(validated);
+      return { ...result, runtime: 'langgraph' };
+    } catch (error) {
+      console.error('[chat-send] langgraph error:', error?.message);
+      // 返回结构化错误，不回退到旧链路
+      return {
+        reply: `LangGraph 处理失败：${error?.message || '未知错误'}`,
+        model: 'new-arch-error',
+        runtime: 'langgraph_error',
+        error: error?.message || String(error)
+      };
+    }
+  }
+  // 新架构初始化失败时才回退到旧链路
+  const legacyResult = await sendChatMessage(validated);
+  return { ...legacyResult, runtime: 'legacy' };
+});
+
+// Onboarding 偏好提交：保存用户偏好，调用 OnboardingGraph 恢复流程
+ipcMain.handle('onboarding-submit', async (_event, preferences) => {
+  const validated = validateIpc('onboarding-submit', preferences);
+  if (!newArchReady || !newArch) {
+    return { ok: false, reason: 'new-arch-not-ready' };
+  }
+  try {
+    // 同时保存到旧 pet-data（兼容旧 UI）
+    if (validated?.nickname) {
+      const petData = loadPetData(app);
+      if (!petData.profile) petData.profile = {};
+      petData.profile.userName = String(validated.nickname);
+      petData.profile.preferredName = String(validated.preferredName || validated.nickname);
+      updatePetData(app, petData);
+    }
+    // 调用 OnboardingGraph.resumeWithPreferences 完成剩余流程
+    const completed = await newArch.resumeOnboardingWithPreferences?.(validated || {});
+    return { ok: true, completed: !!completed };
+  } catch (error) {
+    console.error('[onboarding-submit] failed:', error?.message || error);
+    return { ok: false, reason: String(error?.message || 'unknown') };
+  }
+});
+
+// V1 不包含命令执行（架构计划明确禁止）。
+// Safe Shell IPC 保留接口但始终返回禁用状态，避免渲染进程调用时崩溃。
+ipcMain.handle('safe-shell:interpret', () => ({
+  reply: '命令执行功能在 V1 中不可用。',
+  action: null,
+  ok: false
+}));
+
+ipcMain.handle('safe-shell:confirm', () => ({ ok: false, reply: '命令执行功能在 V1 中不可用。' }));
+
+ipcMain.handle('safe-shell:cancel', () => ({ ok: true }));
+
+ipcMain.handle('safe-shell:get-settings', () => ({
+  enabled: false,
+  whitelist: [],
+  confirmationRequired: true,
+  available: false
+}));
+
+ipcMain.handle('safe-shell:set-enabled', () => ({
+  ok: false,
+  reply: 'V1 不支持启用命令执行。'
+}));
+
+// ===== 架构状态 IPC =====
+// 供 Renderer 查询当前运行时状态，确认 LangGraph 新架构是否真正运行
+ipcMain.handle('architecture:get-status', () => {
+  if (!newArch) {
+    return {
+      runtime: 'legacy',
+      state: archState,
+      initialized: false,
+      databaseReady: false,
+      databasePathExists: false,
+      databasePath: null,
+      activeCharacterId: '',
+      schedulerRunning: false,
+      reflectionWorkerRunning: false,
+      registeredSkills: [],
+      lastInitializationError: archInitError
+    };
+  }
+  const status = newArch.getArchitectureStatus?.(archInitError) ?? {
+    runtime: 'legacy',
+    initialized: false,
+    databaseReady: false,
+    databasePathExists: false,
+    databasePath: null,
+    activeCharacterId: '',
+    schedulerRunning: false,
+    reflectionWorkerRunning: false,
+    registeredSkills: [],
+    lastInitializationError: archInitError
+  };
+  return { ...status, state: archState };
+});
+
+// 立即生成今日摘要：通过 publishStartupEvent 走正式 GraphDispatcher 链路
+ipcMain.handle('architecture:trigger-digest', () => {
+  if (!newArchReady || !newArch) return { ok: false, reason: 'not-ready' };
+  try {
+    newArch.publishStartupEvent?.();
+    return { ok: true };
+  } catch (e) {
+    console.error('[trigger-digest]', e?.message);
+    return { ok: false, reason: e?.message || 'failed' };
+  }
+});
+
+ipcMain.handle('reminder:list', () => {
+  if (!newArchReady || !newArch) return [];
+  try {
+    return newArch.getActiveReminders?.() ?? [];
+  } catch (e) {
+    console.error('[reminder:list]', e?.message);
+    return [];
+  }
+});
+
+ipcMain.handle('reminder:delete', (_event, id) => {
+  validateIpc('reminder:delete', id);
+  if (!newArchReady || !newArch) return { deleted: false };
+  try {
+    return newArch.deleteReminder?.(id) ?? { deleted: false };
+  } catch (e) {
+    console.error('[reminder:delete]', e?.message);
+    return { deleted: false };
+  }
+});
 
 ipcMain.handle('pet-data:get', () => loadPetData(app));
 
 ipcMain.handle('pet-data:update', (_event, nextData) => updatePetData(app, () => nextData));
 
-ipcMain.handle('memory:list', (_event, type) => memoryService.listMemories(app, String(type || '')));
+ipcMain.handle('memory:list', (_event, type) => {
+  const validated = validateIpc('memory:list', type);
+  const memType = String(validated || '');
+  if (newArchReady && newArch?.getMemories) {
+    try { return newArch.getMemories(memType); } catch (e) { console.error('[memory:list]', e?.message); }
+  }
+  return memoryService.listMemories(app, memType);
+});
 
-ipcMain.handle('memory:add', (_event, type, content, options) => (
-  memoryService.addMemory(app, String(type || ''), String(content || ''), asPlainObject(options))
-));
+ipcMain.handle('memory:add', (_event, ...args) => {
+  const validated = validateIpc('memory:add', args);
+  const memType = String(validated[0] || '');
+  const content = String(validated[1] || '');
+  const options = asPlainObject(validated[2]);
+  if (newArchReady && newArch?.addMemory) {
+    try { return newArch.addMemory(memType, content, options); } catch (e) { console.error('[memory:add]', e?.message); throw e; }
+  }
+  return memoryService.addMemory(app, memType, content, options);
+});
 
-ipcMain.handle('memory:update', (_event, type, id, patch) => (
-  memoryService.updateMemory(app, String(type || ''), String(id || ''), asPlainObject(patch))
-));
+ipcMain.handle('memory:update', (_event, type, id, patch) => {
+  const validated = validateIpc('memory:update', [type, id, patch]);
+  const memType = String(validated[0] || '');
+  const memId = String(validated[1] || '');
+  const memPatch = asPlainObject(validated[2]);
+  if (newArchReady && newArch?.updateMemory) {
+    try { return newArch.updateMemory(memType, memId, memPatch); } catch (e) { console.error('[memory:update]', e?.message); throw e; }
+  }
+  return memoryService.updateMemory(app, memType, memId, memPatch);
+});
 
-ipcMain.handle('memory:delete', (_event, type, id) => (
-  memoryService.deleteMemory(app, String(type || ''), String(id || ''))
-));
+ipcMain.handle('memory:delete', (_event, type, id) => {
+  const validated = validateIpc('memory:delete', [type, id]);
+  const memType = String(validated[0] || '');
+  const memId = String(validated[1] || '');
+  if (newArchReady && newArch?.deleteMemory) {
+    try { return newArch.deleteMemory(memType, memId); } catch (e) { console.error('[memory:delete]', e?.message); throw e; }
+  }
+  return memoryService.deleteMemory(app, memType, memId);
+});
 
-ipcMain.handle('memory:clear-expired-short-term', () => (
-  memoryService.clearExpiredShortTermMemories(app)
-));
+ipcMain.handle('memory:clear-expired-short-term', () => {
+  // 新架构中短期记忆不持久化，无需清理
+  if (newArchReady) return { removed: 0 };
+  return memoryService.clearExpiredShortTermMemories(app);
+});
 
-ipcMain.handle('memory:clear-type', (_event, type) => (
-  memoryService.clearMemories(app, String(type || ''))
-));
+ipcMain.handle('memory:clear-type', (_event, type) => {
+  const validated = validateIpc('memory:clear-type', type);
+  const memType = String(validated || '');
+  if (newArchReady && newArch?.clearMemoriesByType) {
+    try { return newArch.clearMemoriesByType(memType); } catch (e) { console.error('[memory:clear-type]', e?.message); throw e; }
+  }
+  return memoryService.clearMemories(app, memType);
+});
 
-ipcMain.handle('memory:clear-all', () => memoryService.clearAllMemories(app));
+ipcMain.handle('memory:clear-all', () => {
+  if (newArchReady && newArch?.clearAllMemoriesNewArch) {
+    try { return newArch.clearAllMemoriesNewArch(); } catch (e) { console.error('[memory:clear-all]', e?.message); throw e; }
+  }
+  return memoryService.clearAllMemories(app);
+});
+
+// 记忆导出：弹出保存对话框，写入不含密钥的 JSON
+ipcMain.handle('memory:export', async () => {
+  validateIpc('memory:export', null); // 校验通过则继续，失败则抛异常
+  if (!newArchReady || !newArch?.exportUserData) {
+    throw new Error('Export not available: architecture not initialized');
+  }
+  try {
+    const exportData = newArch.exportUserData();
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出记忆数据',
+      defaultPath: `pet-memories-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (result.canceled || !result.filePath) {
+      return { success: false, reason: 'cancelled' };
+    }
+    fs.writeFileSync(result.filePath, JSON.stringify(exportData, null, 2), 'utf-8');
+    console.log('[memory:export] exported to', result.filePath);
+    return { success: true, path: result.filePath };
+  } catch (e) {
+    console.error('[memory:export]', e?.message);
+    return { success: false, error: e?.message || String(e) };
+  }
+});
 
 ipcMain.handle('memory:detect-explicit-intent', (_event, textValue) => (
   memoryService.detectExplicitMemoryIntent(String(textValue || ''))
 ));
 
-ipcMain.handle('memory:analyze-and-apply', (_event, textValue) => (
-  analyzeAndApplyMemory(String(textValue || ''))
-));
+ipcMain.handle('memory:analyze-and-apply', (_event, textValue) => {
+  // 新架构就绪时，记忆由 ConversationGraph 和 Reflection 统一处理（SQLite），
+  // 不再调用旧版记忆分析（写入 pet-data.json），避免双系统数据分裂。
+  if (newArchReady) {
+    return { skipped: true, reason: 'new-arch-active' };
+  }
+  return analyzeAndApplyMemory(String(textValue || ''));
+});
 
 ipcMain.handle('affection:get', () => affectionService.getAffectionState(app));
 
-ipcMain.handle('affection:set-score', (_event, score, reason) => (
-  affectionService.setAffectionScore(app, Number(score), String(reason || 'Manual score update.'))
-));
+ipcMain.handle('affection:set-score', (_event, score, reason) => {
+  const validated = validateIpc('affection:set-score', [score, reason]);
+  return affectionService.setAffectionScore(app, Number(validated[0]), String(validated[1] || 'Manual score update.'));
+});
 
-ipcMain.handle('affection:adjust', (_event, delta, eventType, reason, options) => (
-  affectionService.adjustAffection(
+ipcMain.handle('affection:adjust', (_event, delta, eventType, reason, options) => {
+  const validated = validateIpc('affection:adjust', [delta, eventType, reason, options]);
+  return affectionService.adjustAffection(
     app,
-    Number(delta),
-    String(eventType || ''),
-    String(reason || ''),
-    asPlainObject(options)
-  )
-));
+    Number(validated[0]),
+    String(validated[1] || ''),
+    String(validated[2] || ''),
+    asPlainObject(validated[3])
+  );
+});
 
 ipcMain.handle('affection:detect-event', (_event, textValue) => (
   affectionService.detectAffectionEvent(String(textValue || ''))
@@ -1395,12 +2025,24 @@ ipcMain.on('drag-animation-stop', () => {
 
 app.whenReady().then(() => {
   loadPetData(app);
+  // 先初始化新架构，再创建窗口，确保 did-finish-load 时 newArchReady 已就绪
+  tryInitNewArchitecture();
+
+  // 注册 pet-character:// 协议处理器
+  // 将 pet-character://<characterId>/<relative-path> 解析为角色包目录内的文件
+  // 限制访问在当前激活角色包目录内，防止路径穿越
+  registerCharacterProtocol();
+
   createWindow();
 });
 
 app.on('before-quit', () => {
   isQuitting = true;
   stopFullscreenWatcher();
+  safeShellService?.shutdown();
+  if (newArch) {
+    try { newArch.shutdownNewArchitecture(); } catch { /* 忽略关闭错误 */ }
+  }
 });
 
 app.on('window-all-closed', () => {

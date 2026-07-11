@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "default-roxy",
+  "name": "Roxy",
+  "version": "1.0.0",
+  "persona": "persona.json",
+  "prompt": "prompt.md",
+  "motionMap": "motion-map.json",
+  "renderers": {
+    "default": "spritesheet",
+    "spritesheet": {
+      "atlas": "spritesheet/atlas.webp",
+      "metadata": "spritesheet/spritesheet.json"
+    },
+    "live2d": null
+  }
+}

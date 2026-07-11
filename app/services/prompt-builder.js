@@ -23,7 +23,8 @@ const SAFETY_BOUNDARIES = [
 ];
 
 const OUTPUT_LIMITS = [
-  '\u4ec5\u5728\u8bb0\u5fc6\u4e0e\u5f53\u524d\u5bf9\u8bdd\u76f8\u5173\u65f6\u4f7f\u7528\u5b83\uff0c\u4e0d\u8981\u751f\u786c\u590d\u8ff0\u8bb0\u5fc6\u5185\u5bb9\u3002'
+  '\u4ec5\u5728\u8bb0\u5fc6\u4e0e\u5f53\u524d\u5bf9\u8bdd\u76f8\u5173\u65f6\u4f7f\u7528\u5b83\uff0c\u4e0d\u8981\u751f\u786c\u590d\u8ff0\u8bb0\u5fc6\u5185\u5bb9\u3002',
+  '\u5f53\u6ce8\u5165\u7684\u8bb0\u5fc6\u80fd\u56de\u7b54\u7528\u6237\u7684\u95ee\u9898\u3001\u5ef6\u7eed\u4e0a\u4e0b\u6587\u6216\u907f\u514d\u91cd\u590d\u8ffd\u95ee\u65f6\uff0c\u5e94\u4e3b\u52a8\u4f7f\u7528\u5b83\uff1b\u7528\u6237\u95ee\u201c\u8fd8\u8bb0\u5f97\u5417\u201d\u3001\u201c\u4e4b\u524d\u201d\u3001\u201c\u521a\u624d\u201d\u65f6\uff0c\u4f18\u5148\u6839\u636e\u53ef\u53c2\u8003\u8bb0\u5fc6\u56de\u7b54\u3002'
 ];
 
 const LOW_VALUE_CONTENT = new Set(['哈哈', '哈哈哈', '嗯', '好的', '好', 'ok', 'OK', '天气不错']);
@@ -49,9 +50,6 @@ function getKeywords(text) {
   const asciiWords = value.match(/[a-z0-9_]{2,}/g) || [];
   const cjkText = value.replace(/[^\u4e00-\u9fff]/g, '');
   const cjkTokens = [];
-  for (let index = 0; index < cjkText.length; index += 1) {
-    cjkTokens.push(cjkText.slice(index, index + 1));
-  }
   for (let index = 0; index < cjkText.length - 1; index += 1) {
     cjkTokens.push(cjkText.slice(index, index + 2));
   }
@@ -96,6 +94,16 @@ function hasKeywordOverlap(userText, memory) {
   return false;
 }
 
+function isMemoryRecallRequest(userText) {
+  return /(?:\u8fd8\u8bb0\u5f97|\u8bb0\u5f97\u6211|\u4f60\u8bb0\u5f97|\u4e4b\u524d|\u4e0a\u6b21|\u4ee5\u524d|\u6211\u6709\u4ec0\u4e48|\u6211\u7684\u504f\u597d|\u6211\u7684\u8ba1\u5212|\u6211\u7684\u76ee\u6807|\u6211\u559c\u6b22\u4ec0\u4e48|\bremember\b|\bpreviously\b|\blast time\b)/iu
+    .test(String(userText || ''));
+}
+
+function isConversationContinuation(userText) {
+  return /(?:\u7ee7\u7eed|\u521a\u624d|\u524d\u9762|\u4e0a\u9762|\u90a3\u4ef6\u4e8b|\u90a3\u4e2a\u8bdd\u9898|\u63a5\u7740\u8bf4|\bcontinue\b|\bearlier\b)/iu
+    .test(String(userText || ''));
+}
+
 function isCoreUserMemory(memory) {
   if (!memory || typeof memory !== 'object') return false;
   if (memory.pinned) return true;
@@ -131,6 +139,8 @@ function takeRelevantMemories(userText, memories, type, maxCount, limits, requir
 
 function selectRelevantMemories(userText, memories = {}, limits = {}) {
   const nextLimits = { ...getDefaultTokenBudget(), ...limits };
+  const recallRequested = isMemoryRecallRequest(userText);
+  const continuationRequested = isConversationContinuation(userText);
   const userBucket = Array.isArray(memories.user) ? memories.user : [];
   const coreUserMemories = userBucket
     .filter((memory) => !isLowValueMemory(memory) && isCoreUserMemory(memory))
@@ -139,18 +149,47 @@ function selectRelevantMemories(userText, memories = {}, limits = {}) {
     .slice(0, Math.min(2, nextLimits.userMemoryMaxItems))
     .map((item) => mapMemoryForPrompt(item.memory, 'user', nextLimits));
   const coreIds = new Set(coreUserMemories.map((memory) => memory.id).filter(Boolean));
+  const stableUserMemories = takeRelevantMemories(
+    userText,
+    { ...memories, user: userBucket.filter((memory) => !coreIds.has(memory.id)) },
+    'user',
+    1,
+    nextLimits,
+    false
+  );
+  const stableIds = new Set(stableUserMemories.map((memory) => memory.id).filter(Boolean));
+  const longTermMemories = takeRelevantMemories(
+    userText,
+    memories,
+    'longTerm',
+    nextLimits.longTermMemoryMaxItems,
+    nextLimits,
+    !recallRequested
+  );
+  const shortTermMemories = takeRelevantMemories(
+    userText,
+    memories,
+    'shortTerm',
+    nextLimits.shortTermMemoryMaxItems,
+    nextLimits,
+    !(recallRequested || continuationRequested)
+  );
   const selected = [
     ...coreUserMemories,
+    ...stableUserMemories,
     ...takeRelevantMemories(
       userText,
-      { ...memories, user: userBucket.filter((memory) => !coreIds.has(memory.id)) },
+      {
+        ...memories,
+        user: userBucket.filter((memory) => !coreIds.has(memory.id) && !stableIds.has(memory.id))
+      },
       'user',
-      Math.max(0, nextLimits.userMemoryMaxItems - coreUserMemories.length),
+      Math.max(0, nextLimits.userMemoryMaxItems - coreUserMemories.length - stableUserMemories.length),
       nextLimits,
       true
     ),
-    ...takeRelevantMemories(userText, memories, 'longTerm', nextLimits.longTermMemoryMaxItems, nextLimits, true),
-    ...takeRelevantMemories(userText, memories, 'shortTerm', nextLimits.shortTermMemoryMaxItems, nextLimits, true)
+    ...longTermMemories,
+    ...shortTermMemories
   ];
 
   const injected = [];
@@ -215,7 +254,7 @@ function buildAffectionSection(affection = {}) {
   const level = cleanText(affection.level || 'familiar');
   const score = Number.isFinite(Number(affection.score)) ? Number(affection.score) : 50;
   const hint = cleanText(affection.promptHint || '\u81ea\u7136\u3001\u719f\u6089\uff0c\u50cf\u8010\u5fc3\u7684\u5c0f\u8001\u5e08\u3002');
-  return `\u3010\u5f53\u524d\u5173\u7cfb\u72b6\u6001\u3011\n- ${level} (${score}/100)\uff1a${hint}\n- \u53ea\u4f5c\u8bed\u6c14\u53c2\u8003\uff0c\u4fdd\u6301 Roxy \u7684\u6c89\u7a33\u6559\u5e08\u611f\u548c\u8fb9\u754c\u3002`;
+  return `\u3010\u5f53\u524d\u5173\u7cfb\u72b6\u6001\u3011\n- ${level} (${score}/100)\uff1a${hint}\n- \u53ea\u4f5c\u8bed\u6c14\u53c2\u8003\uff0c\u4fdd\u6301 ${petProfile.characterName || 'Pet'} \u7684\u89d2\u8272\u8fb9\u754c\u3002`;
 }
 
 function buildHarnessSection(harness = {}) {
@@ -241,7 +280,7 @@ function estimatePromptStats(prompt, injectedMemories, historyMessages) {
   return buildPromptBudgetReport({ prompt, injectedMemories, historyMessages });
 }
 
-function buildRoxyPrompt(options = {}) {
+function buildPetPrompt(options = {}) {
   const budget = { ...getDefaultTokenBudget(), ...(options.limits || {}) };
   const injectedMemories = selectRelevantMemories(
     options.userText || '',
@@ -286,7 +325,11 @@ function buildRoxyPrompt(options = {}) {
 }
 
 module.exports = {
-  buildRoxyPrompt,
+  buildPetPrompt,
+  // 向后兼容别名：旧代码使用 buildRoxyPrompt
+  buildRoxyPrompt: buildPetPrompt,
   selectRelevantMemories,
+  isMemoryRecallRequest,
+  isConversationContinuation,
   estimatePromptStats
 };

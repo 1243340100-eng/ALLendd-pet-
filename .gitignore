@@ -45,3 +45,5 @@ Thumbs.db
 .cache/
 temp/
 tmp/
+.tmp-electron-data/
+asar-list.txt

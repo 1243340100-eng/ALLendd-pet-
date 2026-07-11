@@ -1,5 +1,5 @@
 const DEFAULT_TOKEN_BUDGET = {
-  systemPromptMaxChars: 4200,
+  systemPromptMaxChars: 9000,
   memoryTotalMaxChars: 1500,
   singleMemoryMaxChars: 180,
   historyMaxMessages: 10,

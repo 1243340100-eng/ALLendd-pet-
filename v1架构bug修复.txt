@@ -1,0 +1,430 @@
+请修复 roxy-electron-pet-framework 当前测试发现的三个核心问题：
+
+1. 相对时间提醒无法识别，需要引入低成本模型做结构化意图和时间提取。
+2. Onboarding 昵称虽然写入数据库，但运行时 Persona 仍使用角色包硬编码的默认称呼。
+3. AI 错误回答正在污染长期记忆。
+4. 所有模型调用需要获得可信的当前系统时间。
+5. 记忆记录必须包含精确到秒、时区明确的来源时间和实际写入时间。
+
+项目路径：
+
+D:\Documents\展示项目内容\roxy-electron-pet-framework
+
+不要只修改测试或 Prompt 文案。必须修通 Electron → ConversationGraph → ModelGateway → Skill → SQLite → Reflection 的真实链路。
+
+一、已经确认的实际问题
+
+实际 SQLite 中：
+
+- users/settings 已正确保存用户填写的 nickname 和 preferred_name。
+- 但 memories 中出现了错误记录：
+  - “用户昵称为昌昌”
+  - “用户的名字是昌昌”
+- character-packs/default/persona.json 的 corePrompt、speakingStyle、sampleDialogues、memoryGuidance 和 userPetName 多处硬编码“昌昌”。
+- GraphDispatcher.handleChatDirect() 每轮直接使用 pack.persona，没有加载 users/settings 中的用户称呼。
+- OnboardingGraph 构建出的自定义 Persona 只存在于当次 Graph state，没有成为后续 ConversationGraph 的运行时 Persona。
+- ReflectionGraph 同时把 userMessage 和 assistantReply 发给模型，未要求候选记忆必须有来自用户原文的证据，所以 AI 自己说出的错误内容会被当作用户事实写入。
+- create-reminder-branch.ts 只解析具体钟点，不支持“一分钟后、半小时后、两小时后”等相对时间。
+- route-or-extract.ts 明确不调用模型，提醒提取完全依赖正则。
+- ConversationGraph 的系统 Prompt 没有当前时间。
+- SQLite memories.created_at/updated_at 使用 datetime('now')，虽然精确到秒，但格式没有 Z 或时区，UI 也没有明确显示本地写入时间。
+
+二、P0：修复用户昵称的唯一数据来源
+
+新增 UserContextService，统一加载：
+
+{
+  userId,
+  nickname,
+  preferredName,
+  displayName,
+  timezone,
+  locale
+}
+
+displayName 规则：
+
+preferredName.trim()
+|| nickname.trim()
+|| 角色包默认 userPetName
+|| "用户"
+
+要求：
+
+1. 每轮 ConversationGraph、ProactiveGraph、日报、提醒气泡和日程回复都必须加载 UserContext。
+2. 不允许直接把角色包原始 userPetName 当成当前用户称呼。
+3. GraphDispatcher 创建 ConversationState 前必须生成 runtimePersona：
+   - 基础身份仍来自角色包。
+   - userPetName 使用 UserContext.displayName。
+   - 不修改角色包原对象。
+4. Onboarding 中 preferredName 可以为空：
+   - 为空时自动使用 nickname。
+   - nickname 和 preferredName 都写入 users/settings。
+5. “我叫什么名字”“你应该怎么称呼我”等问题不能只依赖模糊记忆检索：
+   - 直接把结构化 UserContext 注入系统 Prompt。
+   - 回答时区分 nickname 与 preferredName。
+6. 如果用户在对话中明确说“以后叫我小林”：
+   - 通过受控 profile 更新流程更新 users.preferred_name。
+   - 同步更新唯一一条结构化 profile 记忆。
+   - 后续所有 Graph 立即使用新称呼。
+
+三、移除角色包中的硬编码用户姓名
+
+将 character-packs/default/persona.json 中所有“昌昌”改为模板变量，例如：
+
+{{user_display_name}}
+
+覆盖：
+
+- corePrompt
+- speakingStyle
+- relationshipBoundary
+- memoryGuidance
+- reminderGuidance
+- sampleDialogues
+- userPetName
+
+实现 RuntimePersonaBuilder：
+
+buildRuntimePersona(basePersona, userContext)
+
+规则：
+
+1. 角色身份不可被用户设置覆盖。
+2. 只替换受允许的用户称呼模板。
+3. 模板不存在时保持向后兼容。
+4. 新角色包不得硬编码开发者个人姓名。
+5. 增加角色包校验：检测明显硬编码的默认用户姓名并给出警告。
+
+四、P0：修复 Reflection 错误记忆污染
+
+Reflection 不得把 assistantReply 当作事实来源。
+
+修改 extract-memory-candidates 的结构化输出：
+
+{
+  "candidates": [
+    {
+      "type": "profile|preference|event|relationship|project",
+      "content": "...",
+      "scope": "global|character",
+      "confidence": 0.0,
+      "evidenceQuote": "必须原样出现在 userMessage 中",
+      "sourceRole": "user"
+    }
+  ]
+}
+
+强制规则：
+
+1. 只允许保存用户明确说出的事实。
+2. assistantReply 只能作为对话语境，不能作为证据。
+3. evidenceQuote 必须是 userMessage 的非空原文子串。
+4. evidenceQuote 不存在、来自 assistantReply 或只是模型推断时必须拒绝。
+5. 用户问“我叫什么名字”不代表用户声明了名字，不能生成姓名记忆。
+6. AI 回答“你叫昌昌”绝不能写入 profile。
+7. create_reminder、list_schedule、expression 等工具分支默认不进入 Reflection。
+8. 提醒已经存在 reminders 表中，不要再生成：
+   - “用户请求设置提醒”
+   - “用户创建了喝水提醒”
+   这类重复 event 记忆。
+9. 用户结构化身份优先于模型提取记忆；冲突候选必须拒绝。
+
+对当前已有错误数据增加一次安全修复 migration：
+
+1. 如果 users.preferred_name 或 nickname 非空：
+   - 查找明显的姓名类 profile 记忆。
+   - 与权威 users 数据冲突的记录执行软删除，不物理删除。
+2. Upsert 一条权威全局 profile 记忆：
+   - structured_data.key = "preferred_name"
+   - structured_data.value = 实际 displayName
+   - structured_data.origin = "onboarding" 或 "explicit_user_update"
+   - sourceRole = "user"
+3. migration 必须幂等。
+4. 不得误删其他用户偏好或身份数据。
+
+五、P0：智能提醒解析
+
+采用混合架构：
+
+user input
+→ 本地高召回候选检测
+→ fastModel 结构化解析
+→ TimeService 验证和归一化
+→ 缺字段则 checkpoint 追问
+→ PermissionGuard
+→ create_reminder skill
+→ SQLite transaction
+→ 成功回复
+
+本地规则只负责判断“可能是提醒请求”，不要继续独自承担完整时间解析。
+
+候选包括：
+
+- 提醒我……
+- 记得叫我……
+- 到时候告诉我……
+- 一会儿提醒一下……
+- 别让我忘了……
+- N 分钟/小时后……
+- 明早/今晚/下周……
+- 用户正在补充 reminder checkpoint 时的短输入。
+
+调用 ModelGateway 的 fastModel，输出严格 JSON：
+
+{
+  "intent": "create_reminder|not_reminder",
+  "content": "标准化提醒内容",
+  "originalTimeExpression": "一分钟后",
+  "triggerAtUtc": "ISO-8601 UTC",
+  "timezone": "Asia/Shanghai",
+  "isRepeating": false,
+  "recurrenceRule": null,
+  "priority": "low|normal|high",
+  "missingFields": [],
+  "confidence": 0.0,
+  "assumptions": []
+}
+
+模型 Prompt 必须包含可信时间：
+
+- 当前 UTC 时间
+- 当前本地时间，精确到秒
+- IANA 时区
+- 星期
+- 当前本地日期
+- 用户原始输入
+- 已有 reminderDraft
+- 本轮消息接收时间
+
+示例：
+
+当前本地时间：2026-07-11 16:07:12
+时区：Asia/Shanghai
+用户：你可以在一分钟后提醒我喝水吗
+
+期望：
+
+content = "喝水"
+triggerAtUtc 对应本地 16:08:12
+missingFields = []
+confidence 足够高时直接创建，不追问。
+
+模型不得直接写数据库。TimeService 必须验证：
+
+1. ISO 格式合法。
+2. triggerAt 在未来。
+3. 相对时间与当前可信时间基本一致。
+4. 时区合法。
+5. 重复规则合法。
+6. 离现在异常遥远时要求确认。
+7. 低置信度或存在关键 assumptions 时追问。
+
+六、本地离线兜底
+
+模型不可用时仍支持这些确定表达：
+
+- N 秒后
+- N 分钟后
+- N 小时后
+- 半小时后
+- 今天 HH:mm
+- 明天/后天 HH:mm
+- 上午/下午/晚上 N 点
+- 每天/每周的明确时间
+
+不要再次出现“一分钟后”连续追问但无法解析的死循环。
+
+多轮规则：
+
+用户：提醒我交报告
+AI：请问什么时候提醒？
+用户：十分钟后
+→ 使用第二条消息的接收时间计算十分钟后
+→ 保留第一轮 content="交报告"
+→ 直接创建。
+
+七、fastModel 配置
+
+当前新架构 ModelGateway 忽略 API 设置中用户填写的 model，直接使用 config-loader.ts 中硬编码的：
+
+fastModel = deepseek-chat
+
+请修复模型别名配置：
+
+1. API 设置增加：
+   - fastModel
+   - balancedModel
+   - reasoningModel
+2. 允许用户把 fastModel 配置为服务商实际支持的低成本模型。
+3. 如果用户要用 DeepSeek V4 Flash，应填写服务商实际 API model ID；不要仅硬编码展示名称。
+4. 提醒意图和字段提取使用 fastModel。
+5. 主聊天继续使用 balancedModel。
+6. Reflection 使用 fastModel。
+7. 每次调用记录 model、alias、用途和 token。
+8. 单轮提醒创建正常只消耗一次小模型调用，不要再调用主聊天模型生成机械确认。
+9. fastModel 失败时使用本地解析器，不得阻塞明确的简单提醒。
+
+八、P0：统一可信时间系统
+
+扩展 TimeService，新增：
+
+getCurrentTimeContext(): {
+  utcIso: string,
+  localIso: string,
+  localDisplay: string,
+  timezone: string,
+  utcOffset: string,
+  epochMs: number,
+  weekday: string
+}
+
+要求：
+
+1. 每轮 ConversationGraph 启动时生成一次 timeContext。
+2. timeContext 写入 Graph state。
+3. 所有模型 Prompt 注入该时间，明确标注为“可信系统时间”。
+4. 用户问“现在几点、今天几号、星期几”时直接使用 TimeService，不让模型猜。
+5. 增加内置只读技能 get_current_time：
+   - permissionLevel = auto_allow
+   - 不调用外部网络
+   - 返回精确到秒的本地时间、UTC、时区和星期。
+6. ProactiveGraph、Reminder parser、日报、Scheduler 共用同一个 TimeService。
+7. 禁止各节点散落使用 new Date() 计算业务日期。
+8. 修复 getTodayDateString()：
+   - 当前实现使用 toISOString().slice(0,10)，得到的是 UTC 日期。
+   - 必须按照用户 IANA 时区计算本地日期。
+   - 测试亚洲时区跨午夜场景。
+
+所谓“实时”定义为：每轮请求进入 Graph 时读取最新系统时间。不要让模型自己维护一个会漂移的时钟。
+
+九、记忆时间精确到秒
+
+记忆应区分：
+
+- sourceOccurredAt：用户说出信息的时间。
+- writtenAt/createdAt：实际写入 SQLite 的时间。
+- updatedAt：最后更新的时间。
+- timezone：写入时的用户时区。
+
+不要把时间直接拼进 content，使用结构化元数据。
+
+建议统一格式：
+
+2026-07-11T08:09:03Z
+
+并在 UI 显示：
+
+2026-07-11 16:09:03（Asia/Shanghai）
+
+新增数据库 migration，不能修改旧 migration 假装升级：
+
+1. 将 memories.created_at、updated_at 的契约统一为明确 UTC ISO-8601。
+2. 增加 source_occurred_at 和 write_timezone 字段。
+3. 把旧的 `YYYY-MM-DD HH:mm:ss` UTC 数据安全转换为带 `T` 和 `Z` 的格式。
+4. migration 必须事务化、幂等并保留原始秒级时间。
+5. 新写入使用 TimeService 提供的时间，不依赖含义模糊的 datetime('now')。
+6. 更新记忆时保留 createdAt，只更新 updatedAt。
+7. Reflection 队列延迟时：
+   - sourceOccurredAt 使用原对话消息时间。
+   - writtenAt 使用实际写入时间。
+8. 记忆列表 UI 显示写入时间到秒。
+9. Prompt 中注入记忆时可显示：
+   - [用户陈述时间：...]
+   - [记忆写入时间：...]
+   但不要让时间标签污染记忆正文。
+10. JSON 导出必须包含这些时间字段。
+
+十、修复角色 Prompt 内的旧姓名残留
+
+不仅修改 userPetName，还必须检查：
+
+- character-packs/default/persona.json
+- app/config/pet-profile.js
+- prompt.md
+- sampleDialogues
+- speakingStyle
+- relationshipBoundary
+- memoryGuidance
+- reminderGuidance
+
+所有面向用户的默认姓名必须模板化。
+
+新增测试：
+
+- Onboarding 输入 nickname=小明、preferredName=明明。
+- 所有最终 Prompt 中不能出现旧默认姓名“昌昌”。
+- “我叫什么名字？”回答应包含昵称小明和希望称呼明明。
+- 日报、提醒、日程回复也使用明明。
+
+十一、必须增加的回归测试
+
+提醒：
+
+1. “一分钟后提醒我喝水”
+   - 不追问。
+   - content 为“喝水”，不能是“喝水吗”。
+   - triggerAt 与消息接收时间相差约 60 秒。
+2. “半小时后提醒我开会”。
+3. “两个小时后叫我关电脑”。
+4. “提醒我交报告”→“十分钟后”的 checkpoint 恢复。
+5. 模型返回过去时间时拒绝写入。
+6. 模型不可用时本地相对时间解析仍成功。
+7. 每日、每周重复规则。
+8. 亚洲时区跨午夜日期。
+
+昵称和记忆：
+
+1. Onboarding 昵称和称呼在重启后仍有效。
+2. 角色包默认姓名不能覆盖用户设置。
+3. “我叫什么名字”不会新增任何姓名记忆。
+4. assistantReply 中出现姓名不能成为候选记忆。
+5. candidate.evidenceQuote 不在 userMessage 中时必须拒绝。
+6. create_reminder 不进入 Reflection。
+7. 错误姓名 migration 会软删除冲突记录。
+8. 正确姓名 profile 只保留一条。
+
+时间：
+
+1. get_current_time 精确到秒。
+2. Conversation Prompt 包含当前时间、时区和星期。
+3. createdAt、sourceOccurredAt、writtenAt、updatedAt 语义正确。
+4. UI 和 JSON 导出显示秒和时区。
+5. UTC 与 Asia/Shanghai 转换正确。
+
+十二、打包验收
+
+完成后必须：
+
+npm.cmd run typecheck
+运行全部 test:* 测试
+npm.cmd run pack
+
+然后使用隔离 userData 启动打包后的 EXE，完成真实测试：
+
+Onboarding 填写昵称
+→ 重启
+→ 问“我叫什么名字”
+→ 一分钟后提醒喝水
+→ 等待实际触发
+→ 查看 reminders 表
+→ 等待 Reflection
+→ 查看 memories 表
+→ 确认没有旧默认姓名和提醒操作噪声记忆
+→ 查看记忆秒级时间
+→ 导出 JSON
+
+交付时提供：
+
+1. 一分钟相对提醒的实际创建时间和触发时间。
+2. UserContext 的脱敏输出。
+3. “我叫什么名字”的实际回复。
+4. Reflection 候选拒绝 assistant 事实的日志。
+5. 记忆记录的 sourceOccurredAt、writtenAt、updatedAt。
+6. 全部测试结果。
+7. 最新 EXE 和 app.asar 时间。
+
+不得仅用修改正则来宣称“智能提醒完成”。
+不得让小模型直接写 SQLite。
+不得继续把角色默认姓名当作用户真实姓名。
+不得把 AI 自己生成的回答写成用户记忆。

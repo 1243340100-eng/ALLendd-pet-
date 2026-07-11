@@ -1,4 +1,4 @@
-# v1.4 Conversation Harness Handoff
+# v1.6 Conversation Harness Handoff
 
 ## What This Architecture Is
 
@@ -125,7 +125,7 @@ The harness reads the profile instead of hardcoding one personality.
 - task pressure
 - safety risk
 
-It is rule-based in v1.4 and leaves room for a future LLM classifier.
+It is rule-based in v1.6 and leaves room for a future LLM classifier.
 
 ### Boundary Engine
 
@@ -233,6 +233,32 @@ The harness does not replace:
 - affection system
 - token budget
 - existing chat IPC
+- Safe Shell local intent parsing and command policy
+
+## Memory Recall Integration
+
+v1.6.0 keeps memory selection outside the harness:
+
+- recall phrases such as “还记得 / 之前 / 上次” can retrieve bounded long-term memories;
+- continuation phrases such as “继续刚才” can retrieve bounded short-term memories;
+- ordinary chat may include one stable user-profile memory;
+- the harness still cannot write memory or change memory budgets directly.
+
+Memory writes continue into the normal character reply path and do not produce a scripted confirmation that bypasses the configured character.
+
+## Safe Shell Integration
+
+Safe Shell runs before memory analysis and normal AI chat:
+
+```text
+user message
+-> local Safe Shell intent parser
+-> fixed read-only allowlist
+-> one-time user confirmation
+-> local restricted execution
+```
+
+If the message is not a supported command request, it proceeds to memory analysis and the conversation harness normally. The harness and personality profile cannot expand the command allowlist or remove confirmation.
 
 ## Prompt Integration
 
@@ -269,6 +295,13 @@ Run harness tests:
 
 ```powershell
 npm.cmd run test:harness
+```
+
+Run memory and Safe Shell tests:
+
+```powershell
+npm.cmd run test:memory-flow
+npm.cmd run test:shell
 ```
 
 Run harness demo:
@@ -308,13 +341,20 @@ The harness tests cover:
 
 Future developers can extend:
 
-- new personality profiles under `personalities/`
+- new personality profiles under `personalities/` (only for new packaged characters; do not add runtime switching UI, see `CHARACTER_PACKAGING_GUIDE.md`)
 - richer analyzer rules or LLM classification
 - more detailed boundary detection
 - real LLM-backed response generation
-- UI for choosing `conversationPersonalityId`
 - State panel display for harness analysis/policy
 - improved post-check rewrite logic
+
+Do not add a UI that lets the end user switch `conversationPersonalityId` at runtime. A packaged build must correspond to exactly one fixed character; runtime personality switching is explicitly forbidden by `CHARACTER_PACKAGING_GUIDE.md`.
+
+## v1.6.0 Response Emotion Boundary
+
+`app/services/response-emotion-service.js` runs after the normal character reply has already been generated. It selects only an animation label and does not rewrite the reply, change harness policy, store memory, or grant capabilities.
+
+The main process calls it only when `petProfile.responseEmotion.enabled` is true. The renderer accepts the returned label only when that label exists in `petProfile.animationRows`; otherwise it uses the configured fallback animation.
 
 ## Development Principles
 
@@ -325,4 +365,3 @@ Future developers can extend:
 - Weak user intent lets AI gently continue.
 - Strong user intent makes AI complete the task directly.
 - Information should be paced, not dumped all at once.
-

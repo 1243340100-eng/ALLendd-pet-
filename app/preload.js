@@ -9,9 +9,26 @@ contextBridge.exposeInMainWorld('petAPI', {
   onSetReminderMinutes: (callback) => ipcRenderer.on('set-reminder-minutes', (_event, minutes) => callback(minutes)),
   onVisibilityMode: (callback) => ipcRenderer.on('visibility-mode', (_event, visible) => callback(visible)),
   onShowApiSettings: (callback) => ipcRenderer.on('show-api-settings', callback),
+  // 主动事件（提醒到期、日报、问候）由 GraphDispatcher 经 callback 推送
+  onProactiveEvent: (callback) => ipcRenderer.on('proactive-event', (_event, dto) => callback(dto)),
+  // 确认主动事件气泡已显示（ACK），通知主进程投递成功
+  ackProactiveEvent: (occurrenceId) => ipcRenderer.invoke('proactive-event:ack', occurrenceId),
+  // Onboarding 请求（首次配置时由 Graph 推送给用户回答）
+  onOnboardingRequest: (callback) => ipcRenderer.on('onboarding-request', (_event, dto) => callback(dto)),
+  // 角色渲染配置（Main 推送角色包 spritesheet 配置，renderer 替换当前 sprite）
+  onCharacterConfig: (callback) => ipcRenderer.on('character-config', (_event, config) => callback(config)),
+  // 提交 onboarding 用户偏好，恢复 OnboardingGraph
+  submitOnboardingPreferences: (preferences) => ipcRenderer.invoke('onboarding-submit', preferences),
   getApiConfig: () => ipcRenderer.invoke('api-config-get'),
   saveApiConfig: (config) => ipcRenderer.invoke('api-config-save', config),
   sendChat: (payload) => ipcRenderer.invoke('chat-send', payload),
+  safeShell: {
+    interpret: (text) => ipcRenderer.invoke('safe-shell:interpret', text),
+    confirm: (id) => ipcRenderer.invoke('safe-shell:confirm', id),
+    cancel: (id) => ipcRenderer.invoke('safe-shell:cancel', id),
+    getSettings: () => ipcRenderer.invoke('safe-shell:get-settings'),
+    setEnabled: (enabled) => ipcRenderer.invoke('safe-shell:set-enabled', enabled)
+  },
   getPetData: () => ipcRenderer.invoke('pet-data:get'),
   updatePetData: (data) => ipcRenderer.invoke('pet-data:update', data),
   listMemories: (type) => ipcRenderer.invoke('memory:list', type),
@@ -21,6 +38,11 @@ contextBridge.exposeInMainWorld('petAPI', {
   clearExpiredShortTermMemories: () => ipcRenderer.invoke('memory:clear-expired-short-term'),
   clearMemories: (type) => ipcRenderer.invoke('memory:clear-type', type),
   clearAllMemories: () => ipcRenderer.invoke('memory:clear-all'),
+  exportMemories: () => ipcRenderer.invoke('memory:export'),
+  getArchitectureStatus: () => ipcRenderer.invoke('architecture:get-status'),
+  triggerDigest: () => ipcRenderer.invoke('architecture:trigger-digest'),
+  listReminders: () => ipcRenderer.invoke('reminder:list'),
+  deleteReminder: (id) => ipcRenderer.invoke('reminder:delete', id),
   detectExplicitMemoryIntent: (text) => ipcRenderer.invoke('memory:detect-explicit-intent', text),
   analyzeAndApplyMemory: (text) => ipcRenderer.invoke('memory:analyze-and-apply', text),
   getAffection: () => ipcRenderer.invoke('affection:get'),

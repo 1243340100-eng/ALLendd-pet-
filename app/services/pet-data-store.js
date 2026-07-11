@@ -2,9 +2,58 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_FILE_NAME = 'pet-data.json';
+const BACKUP_SUFFIX = '.bak';
+const TEMP_SUFFIX = '.tmp';
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function atomicWriteJson(filePath, data) {
+  const dir = path.dirname(filePath);
+  const tempPath = filePath + TEMP_SUFFIX;
+  const backupPath = filePath + BACKUP_SUFFIX;
+  const serialized = JSON.stringify(data, null, 2);
+
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(tempPath, serialized, 'utf8');
+
+  const reparsed = JSON.parse(fs.readFileSync(tempPath, 'utf8'));
+  if (JSON.stringify(reparsed, null, 2) !== serialized) {
+    throw new Error('Atomic write verification failed: temp file content mismatch.');
+  }
+
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.copyFileSync(filePath, backupPath);
+    } catch {
+      // 备份失败不阻断写入
+    }
+  }
+
+  fs.renameSync(tempPath, filePath);
+}
+
+function readJsonWithFallback(filePath) {
+  const backupPath = filePath + BACKUP_SUFFIX;
+  const errors = [];
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return { data: JSON.parse(raw), source: 'main', recovered: false, errors };
+  } catch (error) {
+    errors.push(`main: ${error?.message || error}`);
+  }
+
+  try {
+    const raw = fs.readFileSync(backupPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return { data: parsed, source: 'backup', recovered: true, errors };
+  } catch (error) {
+    errors.push(`backup: ${error?.message || error}`);
+  }
+
+  return { data: null, source: 'none', recovered: false, errors };
 }
 
 function createMemoryEntry(overrides = {}) {
@@ -190,24 +239,21 @@ function writePetData(appInstance, data) {
   const dataPath = getPetDataPath(appInstance);
   const nextData = normalizePetData(data);
   nextData.meta.updatedAt = nowIso();
-  fs.mkdirSync(path.dirname(dataPath), { recursive: true });
-  fs.writeFileSync(dataPath, JSON.stringify(nextData, null, 2), 'utf8');
+  atomicWriteJson(dataPath, nextData);
   return nextData;
 }
 
 function loadPetData(appInstance) {
   const dataPath = getPetDataPath(appInstance);
-  try {
-    const raw = fs.readFileSync(dataPath, 'utf8');
-    const parsed = JSON.parse(raw);
-    const normalized = normalizePetData(parsed);
-    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
-      return writePetData(appInstance, normalized);
+  const result = readJsonWithFallback(dataPath);
+  if (result.data) {
+    const normalized = normalizePetData(result.data);
+    if (result.recovered || JSON.stringify(result.data) !== JSON.stringify(normalized)) {
+      atomicWriteJson(dataPath, normalized);
     }
     return normalized;
-  } catch {
-    return writePetData(appInstance, getDefaultPetData());
   }
+  return writePetData(appInstance, getDefaultPetData());
 }
 
 function savePetData(appInstance, data) {
@@ -224,5 +270,7 @@ module.exports = {
   getDefaultPetData,
   loadPetData,
   savePetData,
-  updatePetData
+  updatePetData,
+  atomicWriteJson,
+  readJsonWithFallback
 };

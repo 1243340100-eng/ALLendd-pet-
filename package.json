@@ -1,6 +1,6 @@
 {
   "name": "electron-pet-framework",
-  "version": "1.4.2",
+  "version": "1.6.0",
   "description": "A reusable Electron desktop pet framework with AI chat, memory, reminders, and placeholder test mode.",
   "main": "app/main.js",
   "author": "Codex",
@@ -8,15 +8,50 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder --win portable",
-    "test:harness": "node app/services/conversation-harness/tests/analyzer.test.js && node app/services/conversation-harness/tests/policy.test.js && node app/services/conversation-harness/tests/playfulness.test.js && node app/services/conversation-harness/tests/boundary.test.js && node app/services/conversation-harness/tests/post-check.test.js",
+    "pack": "npm run build:ts && electron-builder --dir && npm run rebuild:node",
+    "dist": "npm run build:ts && electron-builder --win portable && npm run rebuild:node",
+    "rebuild:node": "npm rebuild better-sqlite3",
+    "test:harness": "node app/services/conversation-harness/tests/analyzer.test.js && node app/services/conversation-harness/tests/policy.test.js && node app/services/conversation-harness/tests/playfulness.test.js && node app/services/conversation-harness/tests/boundary.test.js && node app/services/conversation-harness/tests/post-check.test.js && node app/services/conversation-harness/tests/final-reply-postcheck.test.js",
     "test:character": "node app/services/conversation-harness/tests/character-fidelity.test.js",
-    "demo:harness": "node app/services/conversation-harness/demo/run-demo.js"
+    "test:memory-flow": "node app/services/memory-tests/implicit-memory-reply.test.js && node app/services/memory-tests/memory-selection.test.js",
+    "test:shell": "node app/services/safe-shell-tests/service.test.js && node app/services/safe-shell-tests/output-sanitization.test.js",
+    "test:emotion": "node app/services/emotion-tests/service.test.js && node app/services/emotion-tests/framework-integration.test.js",
+    "test:emotion:packaged": "node app/services/emotion-tests/packaged-e2e.test.js",
+    "test:crash-recovery": "node app/services/crash-recovery.test.js",
+    "test:api-security": "node app/services/api-security.test.js",
+    "test:character-residual": "node app/services/character-residual.test.js",
+    "test:sprite-config": "node app/services/sprite-config.test.js",
+    "demo:harness": "node app/services/conversation-harness/demo/run-demo.js",
+    "typecheck": "tsc --noEmit",
+    "build:ts": "tsc",
+    "test:contracts": "tsx tests/unit/contracts.test.ts",
+    "test:database": "tsx tests/unit/database.test.ts",
+    "test:character-pack": "tsx tests/unit/character-pack.test.ts",
+    "test:onboarding": "tsx tests/unit/onboarding-graph.test.ts",
+    "test:conversation": "tsx tests/unit/conversation-graph.test.ts",
+    "test:proactive": "tsx tests/unit/proactive-graph.test.ts",
+    "test:reflection": "tsx tests/unit/reflection-graph.test.ts",
+    "test:fault": "tsx tests/unit/fault-injection.test.ts",
+    "test:migration": "tsx tests/unit/legacy-migration.test.ts",
+    "test:app-paths": "tsx tests/unit/app-paths.test.ts",
+    "test:renderer-ack": "tsx tests/unit/renderer-ack.test.ts",
+    "test:scheduler-ack": "tsx tests/unit/scheduler-renderer-ack.test.ts",
+    "test:memory-ipc": "tsx tests/unit/memory-ipc-integration.test.ts",
+    "test:reflection-recovery": "tsx tests/unit/reflection-worker-recovery.test.ts",
+    "test:onboarding-e2e": "tsx tests/unit/onboarding-to-startup-e2e.test.ts",
+    "test:weather": "tsx tests/unit/weather-adapter.test.ts",
+    "test:packaged-new-arch": "node tests/packaged/new-arch.test.js",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.1",
     "electron": "^31.7.7",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "electron-rebuild": "^3.2.9",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2"
   },
   "build": {
     "appId": "local.pet.framework",
@@ -28,7 +63,19 @@
     },
     "files": [
       "app/**/*",
+      "src/**/*",
+      "dist/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "character-packs",
+        "to": "character-packs",
+        "filter": ["**/*"]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
     ],
     "win": {
       "target": [
@@ -40,5 +87,12 @@
         }
       ]
     }
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.80",
+    "@langchain/langgraph": "^0.2.74",
+    "better-sqlite3": "^12.11.1",
+    "zod": "^4.4.3",
+    "zod-to-json-schema": "^3.25.2"
   }
 }

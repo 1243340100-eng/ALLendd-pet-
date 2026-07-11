@@ -356,8 +356,88 @@ CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);
 `
 };
 
+/**
+ * V5：PlanningGraph 重构 - 幂等增强 plans/plan_tasks 表。
+ * 不修改 V4 已建表结构，只追加列、约束和触发器。
+ *
+ * 新增：
+ * - plans.draft_version：草案版本号，每次 patch 递增
+ * - plans.lock_version：乐观锁版本，防止并发覆盖
+ * - plans.resolved_model：planningModel 别名解析到的实际模型 ID
+ * - plans.response_model：模型 API 返回的 response.model（真实调用模型）
+ * - plans.user_confirmed：用户是否明确确认发布（0/1）
+ * - 部分唯一索引：同一时间只允许一个 active 计划
+ * - status CHECK 触发器：只允许 draft/active/completed
+ * - plan_tasks.draft_version：任务级草案版本
+ *
+ * 所有操作均幂等（IF NOT EXISTS / columnExists 检查）。
+ */
+const migrationV5: MigrationFile = {
+  version: 5,
+  name: 'planning_graph_constraints',
+  sql: '',
+  run(db: DatabaseType): void {
+    // 1. plans 表追加列（幂等）
+    addColumnIfNotExists(db, 'plans', 'draft_version', 'INTEGER NOT NULL DEFAULT 1');
+    addColumnIfNotExists(db, 'plans', 'lock_version', 'INTEGER NOT NULL DEFAULT 0');
+    addColumnIfNotExists(db, 'plans', 'resolved_model', 'TEXT');
+    addColumnIfNotExists(db, 'plans', 'response_model', 'TEXT');
+    addColumnIfNotExists(db, 'plans', 'user_confirmed', 'INTEGER NOT NULL DEFAULT 0');
+
+    // 2. plan_tasks 表追加列（幂等）
+    addColumnIfNotExists(db, 'plan_tasks', 'draft_version', 'INTEGER NOT NULL DEFAULT 1');
+
+    // 3. 部分唯一索引：同一日期只允许一个 active 计划（幂等）
+    // SQLite 支持 WHERE 子句的部分唯一索引，实现"同时只能有一个 active 计划"
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_active_unique_per_date
+      ON plans(date) WHERE status = 'active';
+    `);
+
+    // 4. status CHECK 触发器（幂等）- INSERT 时校验
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_plans_status_check_insert
+      BEFORE INSERT ON plans
+      FOR EACH ROW
+      BEGIN
+        SELECT CASE
+          WHEN NEW.status NOT IN ('draft', 'active', 'completed')
+          THEN RAISE(ABORT, 'Invalid plan status: must be draft, active, or completed')
+        END;
+      END;
+    `);
+
+    // 5. status CHECK 触发器 - UPDATE 时校验
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_plans_status_check_update
+      BEFORE UPDATE OF status ON plans
+      FOR EACH ROW
+      WHEN NEW.status IS NOT NULL
+      BEGIN
+        SELECT CASE
+          WHEN NEW.status NOT IN ('draft', 'active', 'completed')
+          THEN RAISE(ABORT, 'Invalid plan status: must be draft, active, or completed')
+        END;
+      END;
+    `);
+
+    // 6. 并发保护触发器：更新时校验 lock_version（乐观锁）
+    // 应用层读取时记录 lock_version，更新时 WHERE lock_version = ?，
+    // 若不匹配则 UPDATE 影响 0 行，应用层检测并重试。
+    // 此处不创建触发器，由 repository 层使用 WHERE 条件实现。
+
+    log.info('V5 planning graph constraints applied', {
+      fields: {
+        addedColumns: ['draft_version', 'lock_version', 'resolved_model', 'response_model', 'user_confirmed'],
+        indexes: ['idx_plans_active_unique_per_date'],
+        triggers: ['trg_plans_status_check_insert', 'trg_plans_status_check_update']
+      }
+    });
+  }
+};
+
 /** 所有已注册的 migration，按 version 升序 */
-const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4];
+const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5];
 
 /** 执行所有待执行的 migration */
 export function runMigrations(db: DatabaseType): { applied: number; currentVersion: number } {

@@ -1697,8 +1697,28 @@ while ($true) {
 
 ipcMain.handle('set-window-scale', (_event, scale) => {
   const validated = validateIpc('set-window-scale', scale);
-  if (!mainWindow) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   const next = Math.max(minScale, Math.min(maxScale, Number(validated) || 1));
+
+  // 记录当前已扩展的空间，缩放后需要保持
+  const currentBounds = mainWindow.getBounds();
+  const planningExtra = planningSpaceOriginalBounds
+    ? currentBounds.height - planningSpaceOriginalBounds.height
+    : 0;
+  const bubbleExtra = bubbleSpaceOriginalBounds
+    ? currentBounds.width - bubbleSpaceOriginalBounds.width
+    : 0;
+
+  // 先恢复到未扩展的基础 bounds，避免缩放计算被扩展后的尺寸干扰
+  if (planningSpaceOriginalBounds) {
+    mainWindow.setBounds(planningSpaceOriginalBounds);
+    planningSpaceOriginalBounds = null;
+  }
+  if (bubbleSpaceOriginalBounds) {
+    mainWindow.setBounds(bubbleSpaceOriginalBounds);
+    bubbleSpaceOriginalBounds = null;
+  }
+
   const bounds = mainWindow.getBounds();
   const nextWidth = Math.round(startSize.width * next);
   const nextHeight = Math.round(startSize.height * next);
@@ -1713,7 +1733,22 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
     workArea.y,
     Math.min(workArea.y + workArea.height - nextHeight, anchorY - nextHeight)
   );
-  mainWindow.setBounds({ x, y, width: nextWidth, height: nextHeight });
+  const newBaseBounds = { x, y, width: nextWidth, height: nextHeight };
+  mainWindow.setBounds(newBaseBounds);
+
+  // 若缩放前存在计划/气泡扩展，按新的基础尺寸重新应用，防止聊天栏/计划栏错位或被遮挡
+  if (planningExtra > 0) {
+    planningSpaceOriginalBounds = { ...newBaseBounds };
+    const newY = Math.max(workArea.y, newBaseBounds.y - planningExtra);
+    const newHeight = newBaseBounds.height + (newBaseBounds.y - newY);
+    mainWindow.setBounds({ ...newBaseBounds, y: newY, height: newHeight });
+  }
+  if (bubbleExtra > 0) {
+    bubbleSpaceOriginalBounds = { ...newBaseBounds };
+    const newX = Math.max(workArea.x, newBaseBounds.x - bubbleExtra);
+    const newWidth = newBaseBounds.width + (newBaseBounds.x - newX);
+    mainWindow.setBounds({ ...newBaseBounds, x: newX, width: newWidth });
+  }
 });
 
 ipcMain.handle('window:focus', () => {
@@ -2058,98 +2093,57 @@ ipcMain.on('release-bubble-space', () => {
   }
 });
 
-// ===== 计划任务（Planning Bubble）=====
-let planRepo = null;
-try {
-  planRepo = require('../dist/infrastructure/database/repositories/plan-repository.js').planRepository;
-} catch (e) {
-  console.warn('[planning] plan-repository not loaded:', e?.message);
-}
+// 计划面板空间扩展：进入计划模式时向上扩大窗口高度，退出后恢复
+let planningSpaceOriginalBounds = null;
 
-/** 调用 AI 生成或修改计划草案 */
-async function callPlanningAI(userGoal, currentPlan = null) {
-  const config = readApiConfig({ includeSecret: true });
-  if (!config.apiKey) {
-    throw new Error('API key is not configured.');
+ipcMain.on('request-planning-space', (_event, extraHeight) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!planningSpaceOriginalBounds) {
+    planningSpaceOriginalBounds = { ...mainWindow.getBounds() };
   }
-
-  const systemPrompt = `你是用户的桌面宠物助手，擅长帮用户制定可执行的一日计划。
-
-规则：
-- 每个任务必须带开始时间和结束时间（HH:MM 格式）
-- 任务数量 3-6 个，覆盖用户描述的主要目标
-- 时间段不重叠，符合正常人一天的工作节奏
-- 任务要具体可执行，如"完成项目文档大纲"而不是"工作"
-- 主动询问用户是否需要调整
-
-输出格式（严格 JSON，不要包裹在 markdown 代码块中）：
-{
-  "tasks": [
-    { "start_time": "09:00", "end_time": "10:00", "content": "任务内容" }
-  ],
-  "message": "你对用户说的话"
-}`;
-
-  const userMessage = currentPlan
-    ? `当前计划：\n${currentPlan.tasks.map(t => `${t.start_time}-${t.end_time} ${t.content}`).join('\n')}\n\n用户反馈：${userGoal}`
-    : `用户目标：${userGoal}`;
-
-  const response = await fetchWithTimeout(config.endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage }
-      ],
-      temperature: 0.7,
-      max_tokens: 2000,
-      stream: false
-    })
+  const workArea = screen.getDisplayMatching(planningSpaceOriginalBounds).workArea;
+  const safetyMargin = 24;
+  const totalExtra = Math.round(Number(extraHeight) || 0) + safetyMargin;
+  let newY = planningSpaceOriginalBounds.y - totalExtra;
+  let newHeight = planningSpaceOriginalBounds.height + totalExtra;
+  if (newY < workArea.y) {
+    newHeight -= (workArea.y - newY);
+    newY = workArea.y;
+  }
+  mainWindow.setBounds({
+    x: planningSpaceOriginalBounds.x,
+    y: newY,
+    width: planningSpaceOriginalBounds.width,
+    height: newHeight
   });
+});
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`API request failed: ${response.status} ${detail.slice(0, 160)}`);
+ipcMain.on('release-planning-space', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (planningSpaceOriginalBounds) {
+    mainWindow.setBounds(planningSpaceOriginalBounds);
+    planningSpaceOriginalBounds = null;
   }
+});
 
-  const data = await response.json();
-  const reply = data?.choices?.[0]?.message?.content;
-  if (!reply) {
-    throw new Error('API response did not include a reply.');
-  }
+// ===== 计划任务（Planning Bubble）=====
+// 已重构为独立 PlanningGraph：所有规划请求统一经过 ModelGateway（planningModel 别名），
+// 不得直接 fetch。Zod 校验的 Planning Tools 保证写操作安全。
+// 详见 src/agent/graphs/planning/。
 
-  // 解析 JSON（处理可能的 markdown 代码块包裹）
-  let cleaned = reply.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
-  }
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    throw new Error('AI 返回格式不正确，无法解析为 JSON。');
-  }
-}
-
-/** 获取今日日期（Asia/Shanghai 时区） */
-function getTodayDate() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+function planningArchReady() {
+  return newArchReady && newArch && typeof newArch.handlePlanningMessage === 'function';
 }
 
 ipcMain.handle('planning:start', async () => {
-  if (!newArchReady || !planRepo) {
+  if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
-  const activePlan = planRepo.getActivePlan();
+  const activePlan = newArch.getActivePlan();
   if (activePlan) {
     return { ok: true, activePlan };
   }
-  const draftPlan = planRepo.getDraftPlan();
+  const draftPlan = newArch.getDraftPlan();
   if (draftPlan) {
     return { ok: true, draftPlan };
   }
@@ -2157,111 +2151,100 @@ ipcMain.handle('planning:start', async () => {
 });
 
 ipcMain.handle('planning:submit-message', async (_event, text) => {
-  if (!newArchReady || !planRepo) {
+  if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
-  const userGoal = String(text || '').trim();
-  if (!userGoal) {
+  const userInput = String(text || '').trim();
+  if (!userInput) {
     return { ok: false, reason: 'empty-message' };
   }
-
-  const draftPlan = planRepo.getDraftPlan();
-  const currentPlan = draftPlan ? {
-    tasks: draftPlan.tasks.map(t => ({
-      start_time: t.start_time || '',
-      end_time: t.end_time || '',
-      content: t.content
-    }))
-  } : null;
-
   try {
-    const aiResult = await callPlanningAI(userGoal, currentPlan);
-    const today = getTodayDate();
-    let planId;
-
-    if (draftPlan) {
-      planId = draftPlan.id;
-      planRepo.deleteTasksByPlanId(planId);
-    } else {
-      planId = `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      planRepo.insert({ id: planId, date: today, status: 'draft' });
-    }
-
-    const tasks = (aiResult.tasks || []).map((t, i) => ({
-      id: `task_${planId}_${i}`,
-      plan_id: planId,
-      content: String(t.content || ''),
-      start_time: String(t.start_time || ''),
-      end_time: String(t.end_time || ''),
-      completed: 0,
-      order_index: i
-    }));
-    planRepo.insertTasks(tasks);
-
-    return {
-      ok: true,
-      plan: { id: planId, date: today, status: 'draft', tasks },
-      message: aiResult.message || '计划已生成，请确认。'
-    };
+    const dto = await newArch.handlePlanningMessage(userInput, false);
+    return dto;
   } catch (error) {
     return { ok: false, reason: error?.message || 'unknown-error' };
   }
 });
 
 ipcMain.handle('planning:confirm', async () => {
-  if (!newArchReady || !planRepo) {
+  if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
-  const draftPlan = planRepo.getDraftPlan();
-  if (!draftPlan) {
-    return { ok: false, reason: 'no-draft-plan' };
+  try {
+    const dto = await newArch.handlePlanningConfirm();
+    return dto;
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'unknown-error' };
   }
-  planRepo.updateStatus(draftPlan.id, 'active');
-  return { ok: true, plan: { ...draftPlan, status: 'active' } };
+});
+
+/**
+ * 手动修改草案（时间调整等）。
+ * 要求 12：输入框反馈、确认按钮、手动改时间都进入同一个 PlanningGraph。
+ * 将手动编辑作为 isManualEdit 信号送入 PlanningGraph，由 agent_decide 节点识别并 patch。
+ */
+ipcMain.handle('planning:update-draft', async (_event, payload) => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const planId = String(payload?.planId || '');
+  const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+  if (!planId) {
+    return { ok: false, reason: 'missing-plan-id' };
+  }
+  const draftPlan = newArch.getDraftPlan();
+  if (!draftPlan || draftPlan.planId !== planId) {
+    return { ok: false, reason: 'draft-not-found' };
+  }
+
+  // 将手动修改转换为 patches，通过 PlanningGraph 的 patch_tasks 工具应用
+  const patches = tasks.map(t => ({
+    id: String(t.id || ''),
+    start_time: t.start_time != null ? String(t.start_time) : undefined,
+    end_time: t.end_time != null ? String(t.end_time) : undefined,
+    order_index: typeof t.order_index === 'number' ? t.order_index : undefined
+  }));
+
+  // 构建 manual edit 指令送入 PlanningGraph
+  const manualEditInstruction = `手动修改草案：调整任务时间/顺序。patches=${JSON.stringify(patches)}`;
+  try {
+    const dto = await newArch.handlePlanningMessage(manualEditInstruction, false);
+    return dto;
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'manual-edit-failed' };
+  }
 });
 
 ipcMain.handle('planning:toggle-task', async (_event, taskId) => {
-  if (!newArchReady || !planRepo) {
+  if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
-  const activePlan = planRepo.getActivePlan();
-  if (!activePlan) {
-    return { ok: false, reason: 'no-active-plan' };
-  }
-  const task = activePlan.tasks.find(t => t.id === taskId);
-  if (!task) {
-    return { ok: false, reason: 'task-not-found' };
-  }
-  const newCompleted = task.completed === 0;
-  planRepo.toggleTaskCompletion(taskId, newCompleted);
-
-  // 检查是否所有任务都完成
-  const allDone = planRepo.areAllTasksCompleted(activePlan.id);
-  if (allDone) {
-    planRepo.updateStatus(activePlan.id, 'completed');
-  }
-
-  const updatedTasks = planRepo.getTasksByPlanId(activePlan.id);
-  return {
-    ok: true,
-    tasks: updatedTasks,
-    allCompleted: allDone,
-    planStatus: allDone ? 'completed' : 'active'
-  };
+  return newArch.handlePlanningToggleTask(String(taskId || ''));
 });
 
 ipcMain.handle('planning:get-active', async () => {
-  if (!newArchReady || !planRepo) {
+  if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
-  const activePlan = planRepo.getActivePlan();
+  const activePlan = newArch.getActivePlan();
   return { ok: true, plan: activePlan };
+});
+
+/**
+ * 获取 planningModel 解析信息（供状态面板显示）。
+ * 要求 3：状态面板必须显示 planningModel 实际解析值和 response.model。
+ */
+ipcMain.handle('planning:get-model-info', async () => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return { ok: true, info: newArch.getPlanningModelInfo() };
 });
 
 /** 启动时恢复 active plan 到桌面气泡 */
 function restoreActivePlanOnStartup() {
-  if (!newArchReady || !planRepo || !mainWindow) return;
-  const activePlan = planRepo.getActivePlan();
+  if (!planningArchReady() || !mainWindow) return;
+  const activePlan = newArch.getActivePlan();
   if (activePlan) {
     send('planning:plan-published', activePlan);
   }

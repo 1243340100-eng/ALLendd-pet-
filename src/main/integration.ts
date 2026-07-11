@@ -48,6 +48,10 @@ import { migrateLegacyJsonData } from '../infrastructure/migration/legacy-json-m
 import { APP_EVENT_TYPE, EVENT_SOURCE, EVENT_PRIORITY } from '../shared/constants';
 import type { AppEvent } from '../shared/contracts/app-event';
 import type { ResponseDTO } from '../agent/graphs/conversation/state';
+import { PlanningGraphRunner } from '../agent/graphs/planning/graph';
+import type { PlanningResponseDTO } from '../agent/graphs/planning/state';
+import { planRepository } from '../infrastructure/database/repositories/plan-repository';
+import { toPlanDraft } from '../agent/graphs/planning/tools';
 import { createLogger } from '../infrastructure/logging/logger';
 import * as path from 'path';
 
@@ -70,6 +74,7 @@ let dailyGreetingTimer: NodeJS.Timeout | null = null;
 let skillRegistry: SkillRegistry | null = null;
 let schedulerStarted = false;
 let reflectionWorkerStarted = false;
+let planningRunner: PlanningGraphRunner | null = null;
 
 export interface InitOptions {
   isPackaged: boolean;
@@ -199,6 +204,14 @@ export function initNewArchitecture(options: InitOptions): void {
   if (options.onRendererCallback) {
     dispatcher.setRendererCallback(options.onRendererCallback);
   }
+
+  // 9.5 初始化 PlanningGraphRunner（使用已创建的 modelGateway、timeService、userContextService）
+  planningRunner = new PlanningGraphRunner({
+    modelGateway,
+    timeService,
+    userContextService
+  });
+  log.info('planning graph runner initialized');
 
   // 10. 初始化 Scheduler
   // handler 改为 async，直接调用 dispatcher 并等待完成，
@@ -896,4 +909,146 @@ export function clearAllMemoriesNewArch(): { removed: { user: number; longTerm: 
 export function exportUserData(): UserDataExport {
   const userId = getUserId();
   return BackupService.exportUserData(userId);
+}
+
+// ===== PlanningGraph 桥接函数 =====
+// 将旧版 Planning IPC 桥接到新 PlanningGraph。
+// 所有规划请求统一经过 ModelGateway（planningModel 别名），不得直接 fetch。
+
+/**
+ * 处理 Planning 消息（目标/反馈/确认）。
+ * 供 main.js 的 planning:submit-message IPC 调用。
+ * 统一经过 PlanningGraph → ModelGateway（planningModel 别名）。
+ */
+export async function handlePlanningMessage(
+  userInput: string,
+  isConfirmation?: boolean
+): Promise<PlanningResponseDTO> {
+  if (!planningRunner) {
+    log.error('planning runner not initialized, call initNewArchitecture first');
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+
+  const userId = getUserId();
+  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+
+  return planningRunner.submitMessage({
+    userId,
+    characterId,
+    userInput,
+    isConfirmation
+  });
+}
+
+/**
+ * 确认发布计划。
+ * 供 main.js 的 planning:confirm IPC 调用。
+ * 要求 8：publish_plan 必须要求明确用户确认。
+ */
+export async function handlePlanningConfirm(): Promise<PlanningResponseDTO> {
+  if (!planningRunner) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+
+  // 通过 PlanningGraph 处理确认信号
+  return planningRunner.submitMessage({
+    userId: getUserId(),
+    characterId: characterPackManager?.getActiveCharacterId() ?? 'default-roxy',
+    userInput: '就这样',
+    isConfirmation: true
+  });
+}
+
+/**
+ * 获取当前活跃计划（含任务）。
+ * 供 main.js 的 planning:get-active IPC 调用。
+ */
+export function getActivePlan(): any | null {
+  const plan = planRepository.getActivePlan();
+  if (!plan) return null;
+  return toPlanDraft(
+    { id: plan.id, date: plan.date, tasks: plan.tasks },
+    plan.draft_version ?? 1
+  );
+}
+
+/**
+ * 获取当前草案（含任务）。
+ * 供 main.js 的 planning:start IPC 调用。
+ */
+export function getDraftPlan(): any | null {
+  const plan = planRepository.getDraftPlan();
+  if (!plan) return null;
+  return toPlanDraft(
+    { id: plan.id, date: plan.date, tasks: plan.tasks },
+    plan.draft_version ?? 1
+  );
+}
+
+/**
+ * 切换任务完成状态。
+ * 供 main.js 的 planning:toggle-task IPC 调用。
+ */
+export function handlePlanningToggleTask(taskId: string): {
+  ok: boolean;
+  tasks?: any[];
+  allCompleted?: boolean;
+  planStatus?: string;
+  reason?: string;
+} {
+  const activePlan = planRepository.getActivePlan();
+  if (!activePlan) {
+    return { ok: false, reason: 'no-active-plan' };
+  }
+  const task = activePlan.tasks.find(t => t.id === taskId);
+  if (!task) {
+    return { ok: false, reason: 'task-not-found' };
+  }
+  const newCompleted = task.completed === 0;
+  planRepository.toggleTaskCompletion(taskId, newCompleted);
+
+  const allDone = planRepository.areAllTasksCompleted(activePlan.id);
+  if (allDone) {
+    planRepository.updateStatus(activePlan.id, 'completed');
+  }
+
+  const updatedTasks = planRepository.getTasksByPlanId(activePlan.id);
+  return {
+    ok: true,
+    tasks: updatedTasks,
+    allCompleted: allDone,
+    planStatus: allDone ? 'completed' : 'active'
+  };
+}
+
+/**
+ * 获取 planningModel 的解析信息（供状态面板显示）。
+ * 返回 resolved_model（别名解析值）和 response_model（API 返回的真实模型）。
+ * 要求 3：状态面板必须显示 planningModel 实际解析值和 response.model。
+ */
+export function getPlanningModelInfo(): {
+  aliasConfigured: string | null;
+  resolvedModel: string | null;
+  responseModel: string | null;
+} {
+  const aliasConfigured = settingsRepository.get('model_alias_planning');
+  const resolvedModel = settingsRepository.getPlanningModelResolved();
+
+  // 从最新的 draft/active 计划获取 response_model
+  let responseModel: string | null = null;
+  const draft = planRepository.getDraftPlan();
+  if (draft?.response_model) {
+    responseModel = draft.response_model;
+  } else {
+    const active = planRepository.getActivePlan();
+    if (active?.response_model) {
+      responseModel = active.response_model;
+    }
+  }
+
+  return {
+    aliasConfigured,
+    resolvedModel,
+    responseModel
+  };
 }

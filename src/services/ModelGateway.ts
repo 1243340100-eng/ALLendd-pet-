@@ -47,6 +47,12 @@ export interface ModelRequest {
   traceId?: string;
   /** 关联 ID */
   correlationId?: string;
+  /**
+   * 显式指定模型别名，跳过自动路由。
+   * 用于 PlanningGraph 等需要专用模型的场景（如 planningModel）。
+   * 未设置时由 pickModelAlias(mode, complexity) 自动路由。
+   */
+  alias?: ModelAlias;
 }
 
 /** 模型调用结果 */
@@ -150,8 +156,8 @@ export class ModelGateway {
       return this.failResult(request, 'model_unavailable', 'API key not configured');
     }
 
-    // 自动路由选择模型别名
-    const alias = pickModelAlias(request.mode, request.complexity ?? 'simple');
+    // 自动路由选择模型别名（或使用显式指定的别名）
+    const alias = request.alias ?? pickModelAlias(request.mode, request.complexity ?? 'simple');
     const modelName = resolveModelName(this.config.modelAliases, alias);
     const tokenLimit = this.getTokenLimit(request.mode);
 

@@ -48,7 +48,8 @@ export type EventPriority = typeof EVENT_PRIORITY[keyof typeof EVENT_PRIORITY];
 export const MODEL_ALIAS = {
   FAST: 'fastModel',
   BALANCED: 'balancedModel',
-  REASONING: 'reasoningModel'
+  REASONING: 'reasoningModel',
+  PLANNING: 'planningModel'
 } as const;
 
 export type ModelAlias = typeof MODEL_ALIAS[keyof typeof MODEL_ALIAS];

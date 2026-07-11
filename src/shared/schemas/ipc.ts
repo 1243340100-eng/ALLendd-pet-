@@ -38,7 +38,8 @@ export const IPC_CHANNELS = [
   'affection:adjust',
   'affection:detect-event',
   'window:focus',
-  'set-window-scale'
+  'set-window-scale',
+  'planning:update-draft'
 ] as const;
 
 export type IpcChannel = typeof IPC_CHANNELS[number];
@@ -113,7 +114,17 @@ export const ipcInputSchemas = {
     z.string().max(500).optional(),
     z.record(z.string(), z.unknown()).optional()
   ]),
-  'set-window-scale': z.number().min(0.2).max(3)
+  'set-window-scale': z.number().min(0.2).max(3),
+  'planning:update-draft': z.object({
+    planId: z.string().min(1).max(128),
+    tasks: z.array(z.object({
+      id: z.string().min(1).max(128).optional(),
+      content: z.string().max(500).optional(),
+      start_time: z.string().max(8).optional(),
+      end_time: z.string().max(8).optional(),
+      completed: z.union([z.boolean(), z.number()]).optional()
+    })).max(50)
+  })
 } as const;
 
 /** 校验指定通道的输入 */

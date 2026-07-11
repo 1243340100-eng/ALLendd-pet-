@@ -78,6 +78,7 @@
             <span class="planning-view__icon" aria-hidden="true">🎯</span>
             <p>告诉我今天的目标，我来帮你拆成带时间的任务表。</p>
           </div>
+          <div id="planningConversation" class="planning-conversation"></div>
           <div id="planningDraft" class="planning-draft hidden">
             <div class="planning-draft__meta">
               <span class="planning-draft__date" id="planningDraftDate"></span>
@@ -108,6 +109,10 @@
         <section class="state-block">
           <h2>Agent 架构状态</h2>
           <div id="archStatusView" class="state-kv">加载中...</div>
+        </section>
+        <section class="state-block">
+          <h2>PlanningGraph 模型</h2>
+          <div id="planningModelView" class="state-kv">未调用</div>
         </section>
         <section class="state-block">
           <div class="state-block__head">

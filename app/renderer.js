@@ -28,6 +28,8 @@ const chatSend = document.getElementById('chatSend');
 const planModeToggle = document.getElementById('planModeToggle');
 const chatPanelTitle = document.getElementById('chatPanelTitle');
 const planningView = document.getElementById('planningView');
+const planningConversation = document.getElementById('planningConversation');
+const planningModelView = document.getElementById('planningModelView');
 const planningDraft = document.getElementById('planningDraft');
 const planningDraftDate = document.getElementById('planningDraftDate');
 const planningDraftTasks = document.getElementById('planningDraftTasks');
@@ -1155,6 +1157,7 @@ async function loadStatePanel() {
     const stats = petData?.prompt?.lastPromptStats || {};
 
     renderArchStatus(archStatus);
+    refreshPlanningModelInfo();
     renderRemindersList(reminders);
     setKeyValues(affectionView, [
       [t('affection'), `${affection?.score ?? 50} / 100`],
@@ -1477,6 +1480,8 @@ async function sendChatMessage(event) {
 // ===== 计划任务（Planning Bubble）=====
 let planningMode = false;
 let planningBusy = false;
+let currentDraftPlan = null;
+const PLANNING_EXTRA_HEIGHT = 360;
 
 /** 简易 HTML 转义 */
 function escapeHtml(text) {
@@ -1505,20 +1510,35 @@ async function enterPlanningMode() {
   planningMode = true;
   chatLog.classList.add('hidden');
   planningView.classList.remove('hidden');
+  planningView.classList.remove('planning-view--leave');
+  planningView.classList.add('planning-view--enter');
+  setTimeout(() => planningView.classList.remove('planning-view--enter'), 260);
   chatPanelTitle.textContent = '制定今日计划';
   chatInput.placeholder = '告诉我今天的目标...';
   planModeToggle?.classList.add('active');
-  // 恢复未确认的草案
+  window.petAPI?.requestPlanningSpace?.(PLANNING_EXTRA_HEIGHT);
+  // 恢复未确认的草案（PlanningGraph 的 PlanDraft 格式：planId）
   if (result?.draftPlan) {
     renderPlanDraft(result.draftPlan);
+    // 草案存在时显示已有对话提示
+    appendPlanningMessage('assistant', '继续上次的计划草案，你可以调整或确认。');
+  } else {
+    clearPlanningConversation();
   }
+  refreshPlanningModelInfo();
 }
 
 /** 退出计划模式 */
 function exitPlanningMode() {
   planningMode = false;
+  planningView.classList.remove('planning-view--enter');
+  planningView.classList.add('planning-view--leave');
   chatLog.classList.remove('hidden');
-  planningView.classList.add('hidden');
+  window.petAPI?.releasePlanningSpace?.();
+  setTimeout(() => {
+    planningView.classList.add('hidden');
+    planningView.classList.remove('planning-view--leave');
+  }, 260);
   chatPanelTitle.textContent = '聊天';
   chatInput.placeholder = t('chatPlaceholder', { name: petProfile.characterName || 'Pet' });
   planModeToggle?.classList.remove('active');
@@ -1533,20 +1553,29 @@ async function sendPlanningMessage(event) {
   planningBusy = true;
   chatSend.disabled = true;
   chatInput.value = '';
-  showBubble('正在生成计划...', 6000);
+  appendPlanningMessage('user', message);
 
   try {
     const result = await window.petAPI?.submitPlanningMessage?.(message);
     if (!result?.ok) {
-      showBubble(result?.reason || '生成失败', 6000);
+      appendPlanningMessage('assistant', result?.reason || '生成失败');
       return;
     }
-    renderPlanDraft(result.plan);
-    if (result.message) {
-      showBubble(result.message, 8000);
+    // 要求 11：草案卡片与对话同时显示
+    if (result.plan) {
+      renderPlanDraft(result.plan);
     }
+    if (result.message) {
+      appendPlanningMessage('assistant', result.message);
+    }
+    if (result.published) {
+      // 对话中确认后直接发布
+      renderPlanBubble(result.plan);
+      exitPlanningMode();
+    }
+    refreshPlanningModelInfo();
   } catch (e) {
-    showBubble('计划生成失败：' + (e?.message || ''), 6000);
+    appendPlanningMessage('assistant', '计划生成失败：' + (e?.message || ''));
   } finally {
     planningBusy = false;
     chatSend.disabled = false;
@@ -1554,41 +1583,283 @@ async function sendPlanningMessage(event) {
   }
 }
 
-/** 渲染计划草案 */
+/**
+ * 追加 Planning 对话消息（独立消息历史，不混入聊天 chatLog）。
+ * 要求 11：计划模式增加独立消息历史，草案卡片与对话同时显示。
+ */
+function appendPlanningMessage(role, text) {
+  if (!planningConversation) return;
+  const el = document.createElement('div');
+  el.className = 'planning-conversation__msg planning-conversation__msg--' + role;
+  el.textContent = text;
+  planningConversation.appendChild(el);
+  planningConversation.scrollTop = planningConversation.scrollHeight;
+}
+
+/** 清空 Planning 对话历史 */
+function clearPlanningConversation() {
+  if (planningConversation) {
+    planningConversation.innerHTML = '';
+  }
+}
+
+/**
+ * 刷新状态面板中 PlanningGraph 模型信息。
+ * 要求 3：状态面板必须显示 planningModel 实际解析值和 response.model。
+ */
+async function refreshPlanningModelInfo() {
+  if (!planningModelView) return;
+  try {
+    const result = await window.petAPI?.getPlanningModelInfo?.();
+    if (!result?.ok || !result.info) {
+      setKeyValues(planningModelView, [['状态', '未调用']]);
+      return;
+    }
+    const info = result.info;
+    setKeyValues(planningModelView, [
+      ['别名配置', info.aliasConfigured || '(默认 deepseek-chat)'],
+      ['解析模型', info.resolvedModel || '未解析'],
+      ['API 返回', info.responseModel || '未调用']
+    ]);
+  } catch {
+    setKeyValues(planningModelView, [['状态', '查询失败']]);
+  }
+}
+
+let activeTimePickerDropdown = null;
+
+/** 点击页面其他区域关闭时间选择下拉框 */
+document.addEventListener('click', (e) => {
+  if (!activeTimePickerDropdown) return;
+  if (activeTimePickerDropdown.contains(e.target)) return;
+  const trigger = activeTimePickerDropdown.previousElementSibling;
+  if (trigger && trigger.contains(e.target)) return;
+  closeActiveTimePicker();
+});
+
+function closeActiveTimePicker() {
+  if (!activeTimePickerDropdown) return;
+  activeTimePickerDropdown.classList.add('hidden');
+  const trigger = activeTimePickerDropdown.previousElementSibling;
+  if (trigger) trigger.classList.remove('planning-time-picker__trigger--open');
+  activeTimePickerDropdown = null;
+}
+
+/** 解析 HH:MM 为 [hour, minute] */
+function parseTime(value) {
+  const [h, m] = String(value || '').split(':');
+  return {
+    hour: h !== undefined ? h.padStart(2, '0') : '',
+    minute: m !== undefined ? m.padStart(2, '0') : ''
+  };
+}
+
+/** 创建自定义时间选择器 */
+function createTimePicker(value, field, onChange) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'planning-time-picker';
+  wrapper.dataset.field = field;
+
+  const { hour: selectedHour, minute: selectedMinute } = parseTime(value);
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'planning-time-picker__trigger';
+  trigger.textContent = value || '--:--';
+  trigger.setAttribute('aria-label', field === 'start_time' ? '开始时间' : '结束时间');
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'planning-time-picker__dropdown hidden';
+
+  const createColumn = (items, selectedValue, type) => {
+    const column = document.createElement('div');
+    column.className = 'planning-time-picker__column';
+
+    const maskTop = document.createElement('div');
+    maskTop.className = 'planning-time-picker__mask planning-time-picker__mask--top';
+    const maskBottom = document.createElement('div');
+    maskBottom.className = 'planning-time-picker__mask planning-time-picker__mask--bottom';
+
+    const options = document.createElement('div');
+    options.className = 'planning-time-picker__options';
+
+    let selectedOption = null;
+    for (const item of items) {
+      const option = document.createElement('div');
+      option.className = 'planning-time-picker__option';
+      option.textContent = item;
+      option.dataset.value = item;
+      if (item === selectedValue) {
+        option.classList.add('planning-time-picker__option--selected');
+        selectedOption = option;
+      }
+      option.addEventListener('click', () => {
+        const current = parseTime(trigger.textContent || value);
+        const nextValue = type === 'hour'
+          ? `${item}:${current.minute || '00'}`
+          : `${current.hour || '00'}:${item}`;
+        trigger.textContent = nextValue;
+        onChange(nextValue);
+        closeActiveTimePicker();
+      });
+      options.appendChild(option);
+    }
+
+    column.appendChild(maskTop);
+    column.appendChild(options);
+    column.appendChild(maskBottom);
+
+    if (selectedOption) {
+      setTimeout(() => {
+        selectedOption.scrollIntoView({ block: 'center' });
+      }, 0);
+    }
+
+    return column;
+  };
+
+  const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+  const minutes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+
+  dropdown.appendChild(createColumn(hours, selectedHour, 'hour'));
+  dropdown.appendChild(createColumn(minutes, selectedMinute, 'minute'));
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = !dropdown.classList.contains('hidden');
+    closeActiveTimePicker();
+    if (!isOpen) {
+      dropdown.classList.remove('hidden');
+      trigger.classList.add('planning-time-picker__trigger--open');
+      activeTimePickerDropdown = dropdown;
+    }
+  });
+
+  wrapper.appendChild(trigger);
+  wrapper.appendChild(dropdown);
+  return wrapper;
+}
+
+/** 渲染计划草案（支持 PlanningGraph 的 PlanDraft 格式：planId 代替 id） */
 function renderPlanDraft(plan) {
   if (!plan || !plan.tasks) return;
-  planningDraftDate.textContent = plan.date;
+  // 规范化：PlanningGraph 返回 { planId, date, tasks, draftVersion }
+  // 旧格式返回 { id, date, status, tasks }
+  const normalized = {
+    id: plan.planId || plan.id,
+    date: plan.date,
+    status: plan.status || 'draft',
+    tasks: plan.tasks,
+    draftVersion: plan.draftVersion || 1
+  };
+  currentDraftPlan = normalized;
+  planningDraftDate.textContent = normalized.date;
   planningDraftTasks.innerHTML = '';
   for (const task of plan.tasks) {
     const el = document.createElement('div');
     el.className = 'planning-draft__task';
     el.dataset.taskId = task.id;
-    el.innerHTML = `
-      <div class="planning-draft__task-time">${task.start_time || ''} - ${task.end_time || ''}</div>
-      <div class="planning-draft__task-content">${escapeHtml(task.content)}</div>
-    `;
+
+    const head = document.createElement('div');
+    head.className = 'planning-draft__task-head';
+
+    const times = document.createElement('div');
+    times.className = 'planning-draft__task-times';
+
+    const startPicker = createTimePicker(
+      task.start_time || '',
+      'start_time',
+      (value) => handleDraftTimeChange(task.id, 'start_time', value)
+    );
+    const sep = document.createElement('span');
+    sep.className = 'planning-draft__task-time-sep';
+    sep.textContent = '-';
+    const endPicker = createTimePicker(
+      task.end_time || '',
+      'end_time',
+      (value) => handleDraftTimeChange(task.id, 'end_time', value)
+    );
+
+    times.appendChild(startPicker);
+    times.appendChild(sep);
+    times.appendChild(endPicker);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'planning-draft__task-remove';
+    removeBtn.setAttribute('aria-label', '关闭此任务');
+    removeBtn.title = '关闭此任务';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => handleDraftTaskRemove(task.id));
+
+    head.appendChild(times);
+    head.appendChild(removeBtn);
+
+    const content = document.createElement('div');
+    content.className = 'planning-draft__task-content';
+    content.textContent = task.content;
+
+    el.appendChild(head);
+    el.appendChild(content);
     planningDraftTasks.appendChild(el);
   }
   planningDraft.classList.remove('hidden');
   planningActions.classList.remove('hidden');
 }
 
-/** 确认计划 */
+/** 处理草案任务时间手动修改 */
+async function handleDraftTimeChange(taskId, field, value) {
+  if (!currentDraftPlan || !currentDraftPlan.tasks) return;
+  const task = currentDraftPlan.tasks.find((t) => t.id === taskId);
+  if (!task) return;
+  task[field] = value;
+  await saveDraftChanges();
+}
+
+/** 处理关闭/删除草案任务 */
+async function handleDraftTaskRemove(taskId) {
+  if (!currentDraftPlan || !currentDraftPlan.tasks) return;
+  currentDraftPlan.tasks = currentDraftPlan.tasks.filter((t) => t.id !== taskId);
+  renderPlanDraft(currentDraftPlan);
+  await saveDraftChanges();
+}
+
+/** 将本地草案修改保存到后端 */
+async function saveDraftChanges() {
+  if (!currentDraftPlan || !currentDraftPlan.id || !currentDraftPlan.tasks) return;
+  try {
+    await window.petAPI?.updateDraftPlan?.({
+      planId: currentDraftPlan.id,
+      tasks: currentDraftPlan.tasks
+    });
+  } catch (e) {
+    console.error('[planning] save draft changes failed:', e);
+  }
+}
+
+/** 确认计划（要求 8：publish_plan 必须要求明确用户确认） */
 async function confirmPlan() {
   try {
+    await saveDraftChanges();
     const result = await window.petAPI?.confirmPlan?.();
     if (result?.ok) {
-      renderPlanBubble(result.plan);
-      exitPlanningMode();
+      if (result.published) {
+        renderPlanBubble(result.plan);
+        exitPlanningMode();
+      } else if (result.message) {
+        // 模型可能还在请求确认或需要补充信息
+        appendPlanningMessage('assistant', result.message);
+      }
     } else {
       showBubble(result?.reason || '确认失败', 6000);
     }
+    refreshPlanningModelInfo();
   } catch (e) {
     showBubble('确认失败：' + (e?.message || ''), 6000);
   }
 }
 
-/** 修改计划（带反馈重新生成） */
+/** 修改计划（带反馈重新生成，通过 PlanningGraph 优先 patch 而非重建） */
 async function revisePlan() {
   const feedback = revisePlanInput?.value?.trim();
   if (!feedback || planningBusy) return;
@@ -1596,19 +1867,23 @@ async function revisePlan() {
   planningBusy = true;
   chatSend.disabled = true;
   revisePlanInput.value = '';
+  appendPlanningMessage('user', feedback);
 
   try {
     const result = await window.petAPI?.revisePlan?.(feedback);
     if (result?.ok) {
-      renderPlanDraft(result.plan);
+      if (result.plan) {
+        renderPlanDraft(result.plan);
+      }
       if (result.message) {
-        showBubble(result.message, 8000);
+        appendPlanningMessage('assistant', result.message);
       }
     } else {
-      showBubble(result?.reason || '修改失败', 6000);
+      appendPlanningMessage('assistant', result?.reason || '修改失败');
     }
+    refreshPlanningModelInfo();
   } catch (e) {
-    showBubble('修改失败：' + (e?.message || ''), 6000);
+    appendPlanningMessage('assistant', '修改失败：' + (e?.message || ''));
   } finally {
     planningBusy = false;
     chatSend.disabled = false;
@@ -1653,12 +1928,20 @@ function renderPlanTimeline(tasks) {
 /** 切换任务完成状态 */
 async function handleTaskToggle(taskId) {
   try {
+    const taskEl = planBubbleTimeline.querySelector(`.plan-bubble__task[data-task-id="${taskId}"]`);
+    const isCompleting = taskEl && !taskEl.classList.contains('plan-bubble__task--completed');
+
     const result = await window.petAPI?.toggleTaskCompletion?.(taskId);
-    if (result?.ok) {
-      renderPlanTimeline(result.tasks);
-      if (result.allCompleted) {
-        showBubble('🎉 今日计划全部完成！', 10000);
-      }
+    if (!result?.ok) return;
+
+    if (isCompleting && taskEl) {
+      taskEl.classList.add('plan-bubble__task--sinking');
+      await new Promise((resolve) => setTimeout(resolve, 320));
+    }
+
+    renderPlanTimeline(result.tasks);
+    if (result.allCompleted) {
+      showBubble('🎉 今日计划全部完成！', 10000);
     }
   } catch (e) {
     console.error('[planning] toggle task failed:', e);

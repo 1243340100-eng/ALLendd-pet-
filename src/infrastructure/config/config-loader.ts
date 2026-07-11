@@ -14,6 +14,8 @@ export interface ModelAliasMap {
   fastModel: string;
   balancedModel: string;
   reasoningModel: string;
+  /** PlanningGraph 专用模型别名，使用服务商真实 API model ID */
+  planningModel: string;
 }
 
 /** 各模式的最大 token 配额 */
@@ -66,7 +68,8 @@ export function getDefaultAppConfig(): AppConfig {
     modelAliases: {
       fastModel: 'deepseek-chat',
       balancedModel: 'deepseek-chat',
-      reasoningModel: 'deepseek-reasoner'
+      reasoningModel: 'deepseek-reasoner',
+      planningModel: 'deepseek-chat'
     },
     tokenLimits: {
       lowCost: { inputMaxTokens: 8000, outputMaxTokens: 1024 },
@@ -142,7 +145,8 @@ export function applyUserModelAliases(
     modelAliases: {
       fastModel: userAliases.fastModel || config.modelAliases.fastModel,
       balancedModel: userAliases.balancedModel || config.modelAliases.balancedModel,
-      reasoningModel: userAliases.reasoningModel || config.modelAliases.reasoningModel
+      reasoningModel: userAliases.reasoningModel || config.modelAliases.reasoningModel,
+      planningModel: userAliases.planningModel || config.modelAliases.planningModel
     }
   };
 }

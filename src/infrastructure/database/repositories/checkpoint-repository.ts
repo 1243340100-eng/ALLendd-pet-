@@ -27,7 +27,7 @@ export const checkpointRepository = {
     reason: string;
   }): void {
     getDatabase().prepare(`
-      INSERT INTO graph_checkpoints (id, graph_type, state_json, reason)
+      INSERT OR REPLACE INTO graph_checkpoints (id, graph_type, state_json, reason)
       VALUES (@id, @graph_type, @state_json, @reason)
     `).run(checkpoint);
   },

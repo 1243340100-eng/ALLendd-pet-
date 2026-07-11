@@ -1,0 +1,404 @@
+好的，下面是给 GLM 的详细版提示词，重点解释功能是什么、为什么这样设计、以及具体要实现哪些模块。
+
+---
+
+# 功能需求：桌面计划任务条（Planning Bubble）
+
+## 1. 这个功能是做什么的？
+
+当前桌宠有一个 `.reminder-bubble`，用来显示一次性提醒（如"喝水"）。现在要把这个气泡扩展成**常驻桌面的计划任务条**。
+
+用户希望通过和 AI 对话，让 AI 帮他制定今天的任务计划。计划生成后，会以一个**常驻在桌宠左侧的气泡**形式显示在桌面上，用户可以：
+- 随时看到今天还剩哪些任务
+- 点击任务标记为已完成
+- 已完成的任务会沉到列表底部
+- 可以最小化气泡
+- 一天只能有一个活跃计划，全部完成后才能制定下一个
+
+这不是简单的脚本生成 todo 列表，而是要让 **AI Agent 主导整个流程**：理解用户目标 → 主动澄清 → 生成带时间块的任务表 → 根据反馈修改 → 确认后发布 → 跟踪完成状态。
+
+---
+
+## 2. 产品规则（已由用户确认）
+
+| 规则 | 说明 |
+|---|---|
+| 单一活跃计划 | 同一时间只能有一个 `active` 计划，做完后才能创建下一个 |
+| 可最小化 | 气泡右上角有最小化按钮，最小化后显示一个"📝 今日计划"的小药丸按钮 |
+| 已完成任务 | 点击 checkbox 标记完成，任务会**划线并沉到列表最底部** |
+| 入口位置 | 计划模式入口在聊天面板右上角，不在底部控制栏 |
+| AI 模型 | 使用 **DeepSeek V4 Pro**，不能用 chat 模型 |
+| 任务格式 | 必须带时间块，例如"09:00-10:00 完成文档大纲" |
+
+---
+
+## 3. 前端已经准备好了什么？
+
+我（KimiCode）已经在 `app/index.html` 和 `app/styles.css` 中把 UI 骨架和样式搭好，GLM 只需要绑定行为和数据。
+
+### 关键 DOM 元素
+
+#### 聊天面板内的计划模式
+
+```html
+<!-- 计划模式入口按钮 -->
+<button id="planModeToggle">📝 计划</button>
+
+<!-- 聊天面板标题 -->
+<strong id="chatPanelTitle">聊天</strong>
+
+<!-- 普通聊天日志（计划模式下隐藏） -->
+<div id="chatLog" class="chat-log"></div>
+
+<!-- 计划模式视图（默认 hidden） -->
+<div id="planningView" class="planning-view hidden">
+  <!-- 初始引导语 -->
+  <div class="planning-view__intro">告诉我今天的目标，我来帮你拆成带时间的任务表。</div>
+
+  <!-- 计划草案卡片（生成后显示） -->
+  <div id="planningDraft" class="planning-draft hidden">
+    <div class="planning-draft__meta">
+      <span id="planningDraftDate"></span>
+      <span class="planning-draft__badge">草案</span>
+    </div>
+    <div id="planningDraftTasks" class="planning-draft__tasks"></div>
+  </div>
+
+  <!-- 操作按钮（生成后显示） -->
+  <div id="planningActions" class="planning-actions hidden">
+    <button id="confirmPlanBtn">✅ 确认计划</button>
+    <div class="planning-revise">
+      <input id="revisePlanInput" placeholder="哪些部分需要调整？">
+      <button id="revisePlanBtn">🔄 重新生成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 底部输入框（计划模式下复用） -->
+<form id="chatForm">
+  <input id="chatInput" placeholder="和 Pet 说点什么...">
+  <button id="chatSend">发送</button>
+</form>
+```
+
+#### 桌面常驻的计划气泡
+
+```html
+<div id="planningBubble" class="reminder-bubble reminder-bubble--planning hidden">
+  <div class="plan-bubble__header">
+    <strong class="plan-bubble__title">今日计划</strong>
+    <button id="planBubbleMinimize">−</button>
+  </div>
+  <div id="planBubbleTimeline" class="plan-bubble__timeline"></div>
+</div>
+
+<!-- 最小化后显示的小药丸 -->
+<button id="planBubbleRestore" class="plan-bubble__restore hidden">📝 今日计划</button>
+```
+
+### GLM 需要动态生成的 HTML
+
+#### 草案任务项
+
+```html
+<div class="planning-draft__task" data-task-id="...">
+  <div class="planning-draft__task-time">09:00 - 10:00</div>
+  <div class="planning-draft__task-content">完成项目文档大纲</div>
+</div>
+```
+
+#### 气泡任务项
+
+```html
+<label class="plan-bubble__task" data-task-id="...">
+  <span class="plan-bubble__task-time">09:00</span>
+  <span class="plan-bubble__task-main">
+    <input type="checkbox" class="plan-bubble__task-checkbox">
+    <span class="plan-bubble__task-text">完成项目文档大纲</span>
+  </span>
+</label>
+```
+
+已完成时：
+- checkbox 设为 checked
+- 给 `.plan-bubble__task` 加 `.plan-bubble__task--completed`
+- CSS 会自动划线、变淡、沉底
+
+---
+
+## 4. GLM 要实现哪些后端模块？
+
+### 4.1 数据库层
+
+新增两个表：
+
+```sql
+CREATE TABLE plans (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,           -- 日期，如 2026-07-11
+  status TEXT NOT NULL,         -- 'draft' | 'active' | 'completed'
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE plan_tasks (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  content TEXT NOT NULL,        -- 任务内容
+  start_time TEXT,              -- 开始时间，如 09:00
+  end_time TEXT,                -- 结束时间，如 10:00
+  completed INTEGER DEFAULT 0,  -- 0 未完成，1 已完成
+  order_index INTEGER NOT NULL, -- 排序
+  created_at TEXT NOT NULL
+);
+```
+
+约束：
+- 同一天最多只能有一个 `active` 计划
+- 一个 plan 对应多个 plan_tasks
+- 当所有 task 都 completed 时，plan 自动变为 `completed`
+
+### 4.2 AI Agent 层
+
+建议新建 `PlanningAgent`，或扩展 `ConversationGraph`。
+
+Agent 核心能力：
+
+| 工具/函数 | 作用 |
+|---|---|
+| `generate_plan(userGoal)` | 根据用户目标生成带时间块的任务表 |
+| `revise_plan(feedback, currentPlan)` | 根据用户反馈修改现有计划 |
+| `confirm_and_publish_plan(planId)` | 把 draft 计划转为 active，并发布到桌面气泡 |
+| `toggle_task_completion(taskId, completed)` | 切换任务完成状态 |
+| `get_active_plan()` | 获取当前 active 计划及任务 |
+| `complete_plan(planId)` | 所有任务完成后，标记计划完成 |
+
+Agent 行为要求：
+
+1. **主动引导**：不要只生成列表就结束，要询问用户"这样安排可以吗？需要调整吗？"
+2. **带时间块**：每个任务必须有 `start_time` 和 `end_time`
+3. **合理性**：任务数量 3-6 个，时间段不重叠，符合正常人一天的工作节奏
+4. **可修改**：用户说"下午太满"或"把文档放到早上"，Agent 要能针对性修改
+5. **任务粒度**：要具体可执行，如"完成项目文档大纲"而不是"工作"
+
+建议的 Agent prompt 结构：
+
+```
+你是用户的桌面宠物助手，擅长帮用户制定可执行的一日计划。
+
+规则：
+- 同一时间只能帮用户管理一个今日计划
+- 每个任务必须带开始时间和结束时间
+- 任务数量 3-6 个，覆盖用户描述的主要目标
+- 主动询问用户是否需要调整
+- 用户确认后，调用 confirm_and_publish_plan 工具发布计划
+
+输出格式（JSON）：
+{
+  "tasks": [
+    { "start_time": "09:00", "end_time": "10:00", "content": "..." },
+    ...
+  ],
+  "message": "AI 对用户说的话"
+}
+```
+
+### 4.3 IPC 协议
+
+#### renderer → main
+
+```ts
+startPlanningMode()                       // 进入计划模式
+submitPlanningMessage(text: string)       // 用户发送目标或反馈
+confirmPlan()                             // 点击确认计划
+revisePlan(feedback: string)              // 点击重新生成
+toggleTaskCompletion(taskId: string)      // 点击任务 checkbox
+minimizePlanBubble()                      // 最小化气泡
+restorePlanBubble()                       // 恢复气泡
+```
+
+#### main → renderer
+
+```ts
+onPlanningModeStarted()                   // 已进入计划模式
+onPlanDraftGenerated(plan: Plan)          // 返回计划草案
+onPlanPublished(plan: Plan)               // 计划已发布到桌面
+onPlanTasksUpdated(tasks: Task[])         // 任务完成状态变化
+onPlanCompleted()                         // 所有任务完成
+```
+
+### 4.4 renderer.js 逻辑
+
+需要新增/修改的逻辑：
+
+1. **计划模式切换**
+   - 点击 `#planModeToggle`：
+     - 如果当前在普通聊天模式 → 进入计划模式
+     - 如果已经在计划模式 → 退出计划模式
+   - 进入计划模式时：
+     - `#chatLog` 加 `hidden`
+     - `#planningView` 移除 `hidden`
+     - `#chatPanelTitle` 文本改为"制定今日计划"
+     - `#chatInput` placeholder 改为"告诉我今天的目标..."
+     - 给 `#planModeToggle` 加 `active` 类
+   - 退出计划模式时反向操作
+
+2. **与 AI 对话**
+   - 计划模式下，点击发送或按回车 → 调用 `submitPlanningMessage(text)`
+   - 不要在 `#chatLog` 里显示，而是把 AI 返回的计划渲染到 `#planningDraftTasks`
+
+3. **渲染计划草案**
+   - 清空 `#planningDraftTasks`
+   - 按时间顺序插入 `.planning-draft__task`
+   - 显示 `#planningDraft` 和 `#planningActions`
+   - 设置 `#planningDraftDate` 为今天日期
+
+4. **确认与修改**
+   - 点击 `#confirmPlanBtn` → 调用 `confirmPlan()`
+   - 点击 `#revisePlanBtn` → 读取 `#revisePlanInput` 的值，调用 `revisePlan(feedback)`
+
+5. **渲染桌面气泡**
+   - 收到 `onPlanPublished` 后：
+     - `#planningBubble` 移除 `hidden`
+     - `#planBubbleRestore` 加 `hidden`
+     - 按时间顺序渲染 `#planBubbleTimeline`
+   - 任务更新后：
+     - 找到对应 task，更新 checkbox 和 completed 类
+
+6. **任务完成交互**
+   - 点击 `.plan-bubble__task` 或 checkbox → 调用 `toggleTaskCompletion(taskId)`
+   - 注意：checkbox 本身的 change 事件不要触发两次
+
+7. **最小化**
+   - 点击 `#planBubbleMinimize` → `#planningBubble` 加 `hidden`，`#planBubbleRestore` 移除 `hidden`
+   - 点击 `#planBubbleRestore` → 反向操作
+
+### 4.5 main.js 逻辑
+
+需要新增/修改的逻辑：
+
+1. **IPC 处理器**
+   - 注册所有 planning 相关的 IPC 通道
+   - 调用对应的服务函数
+
+2. **计划服务**
+   - 检查是否存在 active 计划
+   - 创建 draft 计划
+   - 更新计划状态
+   - 管理任务完成状态
+
+3. **调用 AI Agent**
+   - `submitPlanningMessage` 时把消息发给 PlanningAgent
+   - Agent 返回计划后保存为 draft，并通知 renderer 渲染
+
+4. **启动时恢复**
+   - 应用启动时检查是否有 active 计划
+   - 如果有，自动发布到桌面气泡
+
+5. **计划完成判断**
+   - 每次 toggle task 后检查是否全部完成
+   - 全部完成时：
+     - 把 plan 状态改为 `completed`
+     - 通知 renderer 显示完成提示
+     - 气泡保留，但可允许用户关闭或开始新计划
+
+---
+
+## 5. 完整交互流程
+
+```
+用户打开聊天面板
+  ↓
+用户点击右上角"📝 计划"按钮
+  ↓
+renderer 切换到计划模式视图
+  ↓
+用户输入："今天要完成项目文档和代码审查"
+  ↓
+renderer 调用 submitPlanningMessage
+  ↓
+main 把消息发给 PlanningAgent
+  ↓
+Agent 生成带时间块的任务表（draft）
+  ↓
+renderer 显示计划草案 + 确认按钮 + 修改输入框
+  ↓
+用户点击"✅ 确认计划"
+  ↓
+main 把 draft 改为 active，保存到数据库
+  ↓
+renderer 隐藏草案视图，显示桌面计划气泡
+  ↓
+气泡常驻桌面，显示今日任务时间线
+  ↓
+用户完成任务，点击 checkbox
+  ↓
+main 更新数据库，通知 renderer
+  ↓
+renderer 给任务加划线，并沉到列表底部
+  ↓
+所有任务完成后
+  ↓
+main 把 plan 改为 completed
+  ↓
+renderer 显示完成提示，用户可开始下一个计划
+```
+
+---
+
+## 6. 数据格式示例
+
+### Plan 对象
+
+```json
+{
+  "id": "plan_20260711_abc123",
+  "date": "2026-07-11",
+  "status": "active",
+  "created_at": "2026-07-11T09:00:00+08:00",
+  "updated_at": "2026-07-11T09:00:00+08:00"
+}
+```
+
+### Task 对象
+
+```json
+{
+  "id": "task_001",
+  "plan_id": "plan_20260711_abc123",
+  "content": "完成项目文档大纲",
+  "start_time": "09:00",
+  "end_time": "10:00",
+  "completed": 0,
+  "order_index": 0,
+  "created_at": "2026-07-11T09:00:00+08:00"
+}
+```
+
+---
+
+## 7. 实现步骤建议
+
+1. 先写数据库 migration（plans / plan_tasks 表）
+2. 写 plan repository 层（CRUD + 查询 active plan）
+3. 新建 PlanningAgent，实现 generate_plan / revise_plan
+4. 在 main.js 中注册 IPC 处理器
+5. 在 preload.js 中暴露 IPC 方法
+6. 在 renderer.js 中实现 UI 绑定
+7. 启动时恢复 active plan 到气泡
+8. 测试完整流程并打包
+
+---
+
+## 8. 注意事项
+
+- 不要删除或重命名我提供的 DOM id 和 class
+- 不要修改 `app/index.html` 的结构，除非必须
+- 不要修改 `app/styles.css`
+- 计划模式切换时，普通聊天记录不丢失，只是隐藏
+- 如果已经有 active 计划，点击"计划"按钮应直接显示当前计划，而不是重新制定
+- 所有任务完成后，气泡保留但显示完成状态，用户手动开始新计划
+
+---
+
+把这段发给 GLM 即可。前端 HTML/CSS 已全部就绪。

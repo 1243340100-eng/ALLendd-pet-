@@ -13,8 +13,16 @@
         桌宠框架测试版<br>
         请替换动画资产和角色配置
       </div>
-      <div id="reminderStack" class="reminder-stack" aria-label="提醒堆叠">
+      <div id="reminderStack" class="reminder-stack" aria-label="提醒与计划堆叠">
         <div id="reminderBubble" class="reminder-bubble hidden" role="alert" aria-label="提醒"></div>
+        <div id="planningBubble" class="reminder-bubble reminder-bubble--planning hidden" role="region" aria-label="今日计划">
+          <div class="plan-bubble__header">
+            <strong class="plan-bubble__title">今日计划</strong>
+            <button id="planBubbleMinimize" type="button" class="plan-bubble__minimize" aria-label="最小化计划">−</button>
+          </div>
+          <div id="planBubbleTimeline" class="plan-bubble__timeline"></div>
+        </div>
+        <button id="planBubbleRestore" class="plan-bubble__restore hidden" type="button" aria-label="恢复今日计划">📝 今日计划</button>
       </div>
       <div id="pet" class="pet" role="img" aria-label="Pet"></div>
       <div id="controls" class="controls">
@@ -58,10 +66,33 @@
 
       <section id="chatPanel" class="chat-panel hidden" aria-label="Pet Framework 聊天">
         <div class="chat-panel__head">
-          <strong>聊天</strong>
-          <button id="chatClose" type="button" aria-label="关闭聊天">&#x00D7;</button>
+          <strong id="chatPanelTitle">聊天</strong>
+          <div class="chat-panel__actions">
+            <button id="planModeToggle" type="button" class="chat-panel__plan-btn" aria-label="进入计划模式">📝 计划</button>
+            <button id="chatClose" type="button" aria-label="关闭聊天">&#x00D7;</button>
+          </div>
         </div>
         <div id="chatLog" class="chat-log"></div>
+        <div id="planningView" class="planning-view hidden">
+          <div class="planning-view__intro">
+            <span class="planning-view__icon" aria-hidden="true">🎯</span>
+            <p>告诉我今天的目标，我来帮你拆成带时间的任务表。</p>
+          </div>
+          <div id="planningDraft" class="planning-draft hidden">
+            <div class="planning-draft__meta">
+              <span class="planning-draft__date" id="planningDraftDate"></span>
+              <span class="planning-draft__badge">草案</span>
+            </div>
+            <div id="planningDraftTasks" class="planning-draft__tasks"></div>
+          </div>
+          <div id="planningActions" class="planning-actions hidden">
+            <button id="confirmPlanBtn" type="button" class="planning-actions__confirm">✅ 确认计划</button>
+            <div class="planning-revise">
+              <input id="revisePlanInput" type="text" autocomplete="off" maxlength="200" placeholder="哪些部分需要调整？">
+              <button id="revisePlanBtn" type="button" class="planning-actions__revise">🔄 重新生成</button>
+            </div>
+          </div>
+        </div>
         <form id="chatForm" class="chat-form">
           <input id="chatInput" type="text" autocomplete="off" maxlength="300" placeholder="和 Pet 说点什么...">
           <button id="chatSend" type="submit">发送</button>

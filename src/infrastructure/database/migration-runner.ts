@@ -326,8 +326,38 @@ WHERE u.preferred_name IS NOT NULL AND u.preferred_name != ''
 `
 };
 
+/** V4：计划任务功能 - plans 和 plan_tasks 表 */
+const migrationV4: MigrationFile = {
+  version: 4,
+  name: 'planning_tables',
+  sql: `
+CREATE TABLE IF NOT EXISTS plans (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+CREATE INDEX IF NOT EXISTS idx_plans_date ON plans(date);
+
+CREATE TABLE IF NOT EXISTS plan_tasks (
+  id TEXT PRIMARY KEY,
+  plan_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  start_time TEXT,
+  end_time TEXT,
+  completed INTEGER DEFAULT 0,
+  order_index INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);
+`
+};
+
 /** 所有已注册的 migration，按 version 升序 */
-const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3];
+const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4];
 
 /** 执行所有待执行的 migration */
 export function runMigrations(db: DatabaseType): { applied: number; currentVersion: number } {

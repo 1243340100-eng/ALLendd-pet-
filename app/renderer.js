@@ -24,6 +24,21 @@ const chatLog = document.getElementById('chatLog');
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const chatSend = document.getElementById('chatSend');
+// 计划任务相关 DOM
+const planModeToggle = document.getElementById('planModeToggle');
+const chatPanelTitle = document.getElementById('chatPanelTitle');
+const planningView = document.getElementById('planningView');
+const planningDraft = document.getElementById('planningDraft');
+const planningDraftDate = document.getElementById('planningDraftDate');
+const planningDraftTasks = document.getElementById('planningDraftTasks');
+const planningActions = document.getElementById('planningActions');
+const confirmPlanBtn = document.getElementById('confirmPlanBtn');
+const revisePlanInput = document.getElementById('revisePlanInput');
+const revisePlanBtn = document.getElementById('revisePlanBtn');
+const planningBubble = document.getElementById('planningBubble');
+const planBubbleMinimize = document.getElementById('planBubbleMinimize');
+const planBubbleTimeline = document.getElementById('planBubbleTimeline');
+const planBubbleRestore = document.getElementById('planBubbleRestore');
 const stateToggle = document.getElementById('stateToggle');
 const languageToggle = document.getElementById('languageToggle');
 const statePanel = document.getElementById('statePanel');
@@ -1401,6 +1416,10 @@ async function handlePendingShellAction(item, shouldConfirm) {
 
 async function sendChatMessage(event) {
   event.preventDefault();
+  // 计划模式下走独立的计划消息发送逻辑
+  if (planningMode) {
+    return sendPlanningMessage(event);
+  }
   const message = chatInput.value.trim();
   if (!message || chatBusy) return;
 
@@ -1455,6 +1474,216 @@ async function sendChatMessage(event) {
   }
 }
 
+// ===== 计划任务（Planning Bubble）=====
+let planningMode = false;
+let planningBusy = false;
+
+/** 简易 HTML 转义 */
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = String(text || '');
+  return div.innerHTML;
+}
+
+/** 切换计划模式 */
+async function togglePlanningMode() {
+  if (planningMode) {
+    exitPlanningMode();
+  } else {
+    await enterPlanningMode();
+  }
+}
+
+/** 进入计划模式 */
+async function enterPlanningMode() {
+  // 如果已有 active 计划，直接显示气泡而非重新制定
+  const result = await window.petAPI?.startPlanningMode?.();
+  if (result?.activePlan) {
+    renderPlanBubble(result.activePlan);
+    return;
+  }
+  planningMode = true;
+  chatLog.classList.add('hidden');
+  planningView.classList.remove('hidden');
+  chatPanelTitle.textContent = '制定今日计划';
+  chatInput.placeholder = '告诉我今天的目标...';
+  planModeToggle?.classList.add('active');
+  // 恢复未确认的草案
+  if (result?.draftPlan) {
+    renderPlanDraft(result.draftPlan);
+  }
+}
+
+/** 退出计划模式 */
+function exitPlanningMode() {
+  planningMode = false;
+  chatLog.classList.remove('hidden');
+  planningView.classList.add('hidden');
+  chatPanelTitle.textContent = '聊天';
+  chatInput.placeholder = t('chatPlaceholder', { name: petProfile.characterName || 'Pet' });
+  planModeToggle?.classList.remove('active');
+}
+
+/** 计划模式下发送消息（目标或反馈） */
+async function sendPlanningMessage(event) {
+  event.preventDefault();
+  const message = chatInput.value.trim();
+  if (!message || planningBusy) return;
+
+  planningBusy = true;
+  chatSend.disabled = true;
+  chatInput.value = '';
+  showBubble('正在生成计划...', 6000);
+
+  try {
+    const result = await window.petAPI?.submitPlanningMessage?.(message);
+    if (!result?.ok) {
+      showBubble(result?.reason || '生成失败', 6000);
+      return;
+    }
+    renderPlanDraft(result.plan);
+    if (result.message) {
+      showBubble(result.message, 8000);
+    }
+  } catch (e) {
+    showBubble('计划生成失败：' + (e?.message || ''), 6000);
+  } finally {
+    planningBusy = false;
+    chatSend.disabled = false;
+    focusChatInput();
+  }
+}
+
+/** 渲染计划草案 */
+function renderPlanDraft(plan) {
+  if (!plan || !plan.tasks) return;
+  planningDraftDate.textContent = plan.date;
+  planningDraftTasks.innerHTML = '';
+  for (const task of plan.tasks) {
+    const el = document.createElement('div');
+    el.className = 'planning-draft__task';
+    el.dataset.taskId = task.id;
+    el.innerHTML = `
+      <div class="planning-draft__task-time">${task.start_time || ''} - ${task.end_time || ''}</div>
+      <div class="planning-draft__task-content">${escapeHtml(task.content)}</div>
+    `;
+    planningDraftTasks.appendChild(el);
+  }
+  planningDraft.classList.remove('hidden');
+  planningActions.classList.remove('hidden');
+}
+
+/** 确认计划 */
+async function confirmPlan() {
+  try {
+    const result = await window.petAPI?.confirmPlan?.();
+    if (result?.ok) {
+      renderPlanBubble(result.plan);
+      exitPlanningMode();
+    } else {
+      showBubble(result?.reason || '确认失败', 6000);
+    }
+  } catch (e) {
+    showBubble('确认失败：' + (e?.message || ''), 6000);
+  }
+}
+
+/** 修改计划（带反馈重新生成） */
+async function revisePlan() {
+  const feedback = revisePlanInput?.value?.trim();
+  if (!feedback || planningBusy) return;
+
+  planningBusy = true;
+  chatSend.disabled = true;
+  revisePlanInput.value = '';
+
+  try {
+    const result = await window.petAPI?.revisePlan?.(feedback);
+    if (result?.ok) {
+      renderPlanDraft(result.plan);
+      if (result.message) {
+        showBubble(result.message, 8000);
+      }
+    } else {
+      showBubble(result?.reason || '修改失败', 6000);
+    }
+  } catch (e) {
+    showBubble('修改失败：' + (e?.message || ''), 6000);
+  } finally {
+    planningBusy = false;
+    chatSend.disabled = false;
+  }
+}
+
+/** 渲染桌面计划气泡 */
+function renderPlanBubble(plan) {
+  if (!plan || !plan.tasks) return;
+  planningBubble.classList.remove('hidden');
+  planBubbleRestore?.classList.add('hidden');
+  renderPlanTimeline(plan.tasks);
+  // 计划气泡显示时请求扩大窗口
+  window.petAPI?.requestBubbleSpace?.(320);
+}
+
+/** 渲染时间线任务列表 */
+function renderPlanTimeline(tasks) {
+  planBubbleTimeline.innerHTML = '';
+  // 未完成的在前，已完成的沉底
+  const sorted = [...tasks].sort((a, b) => {
+    if (a.completed !== b.completed) return a.completed - b.completed;
+    return (a.order_index ?? 0) - (b.order_index ?? 0);
+  });
+  for (const task of sorted) {
+    const label = document.createElement('label');
+    label.className = 'plan-bubble__task' + (task.completed ? ' plan-bubble__task--completed' : '');
+    label.dataset.taskId = task.id;
+    label.innerHTML = `
+      <span class="plan-bubble__task-time">${task.start_time || ''}</span>
+      <span class="plan-bubble__task-main">
+        <input type="checkbox" class="plan-bubble__task-checkbox" ${task.completed ? 'checked' : ''}>
+        <span class="plan-bubble__task-text">${escapeHtml(task.content)}</span>
+      </span>
+    `;
+    const checkbox = label.querySelector('.plan-bubble__task-checkbox');
+    checkbox.addEventListener('change', () => handleTaskToggle(task.id));
+    planBubbleTimeline.appendChild(label);
+  }
+}
+
+/** 切换任务完成状态 */
+async function handleTaskToggle(taskId) {
+  try {
+    const result = await window.petAPI?.toggleTaskCompletion?.(taskId);
+    if (result?.ok) {
+      renderPlanTimeline(result.tasks);
+      if (result.allCompleted) {
+        showBubble('🎉 今日计划全部完成！', 10000);
+      }
+    }
+  } catch (e) {
+    console.error('[planning] toggle task failed:', e);
+  }
+}
+
+/** 最小化计划气泡 */
+function minimizePlanBubble() {
+  planningBubble.classList.add('hidden');
+  planBubbleRestore?.classList.remove('hidden');
+  window.petAPI?.releaseBubbleSpace?.();
+}
+
+/** 恢复计划气泡 */
+function restorePlanBubble() {
+  planningBubble.classList.remove('hidden');
+  planBubbleRestore?.classList.add('hidden');
+  window.petAPI?.requestBubbleSpace?.(320);
+}
+
+// 监听 main 推送的计划发布事件（启动恢复）
+window.petAPI?.onPlanPublished?.((plan) => {
+  renderPlanBubble(plan);
+});
+
 function bindEvent(element, eventName, handler) {
   if (!element) return;
   element.addEventListener(eventName, handler);
@@ -1467,6 +1696,12 @@ bindEvent(apiClearKey, 'click', () => saveApiSettings(true));
 bindEvent(chatToggle, 'click', openChatPanel);
 bindEvent(chatClose, 'click', closeChatPanel);
 bindEvent(chatForm, 'submit', sendChatMessage);
+// 计划任务事件绑定
+bindEvent(planModeToggle, 'click', togglePlanningMode);
+bindEvent(confirmPlanBtn, 'click', confirmPlan);
+bindEvent(revisePlanBtn, 'click', revisePlan);
+bindEvent(planBubbleMinimize, 'click', minimizePlanBubble);
+bindEvent(planBubbleRestore, 'click', restorePlanBubble);
 bindEvent(stateToggle, 'click', openStatePanel);
 bindEvent(stateClose, 'click', closeStatePanel);
 bindEvent(languageToggle, 'click', toggleLanguage);

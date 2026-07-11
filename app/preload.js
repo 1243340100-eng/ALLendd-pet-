@@ -57,5 +57,13 @@ contextBridge.exposeInMainWorld('petAPI', {
   stopDragAnimation: () => ipcRenderer.send('drag-animation-stop'),
   // 气泡空间扩展：reminder bubble 显示时请求扩大窗口宽度，消失后恢复
   requestBubbleSpace: (extraWidth) => ipcRenderer.send('request-bubble-space', extraWidth),
-  releaseBubbleSpace: () => ipcRenderer.send('release-bubble-space')
+  releaseBubbleSpace: () => ipcRenderer.send('release-bubble-space'),
+  // 计划任务（Planning Bubble）
+  startPlanningMode: () => ipcRenderer.invoke('planning:start'),
+  submitPlanningMessage: (text) => ipcRenderer.invoke('planning:submit-message', text),
+  confirmPlan: () => ipcRenderer.invoke('planning:confirm'),
+  revisePlan: (feedback) => ipcRenderer.invoke('planning:submit-message', feedback),
+  toggleTaskCompletion: (taskId) => ipcRenderer.invoke('planning:toggle-task', taskId),
+  getActivePlan: () => ipcRenderer.invoke('planning:get-active'),
+  onPlanPublished: (callback) => ipcRenderer.on('planning:plan-published', (_event, plan) => callback(plan))
 });

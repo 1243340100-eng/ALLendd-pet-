@@ -431,6 +431,8 @@ function createWindow() {
     if (newArchReady && newArch?.publishStartupEvent) {
       newArch.publishStartupEvent();
     }
+    // 恢复 active plan 到桌面气泡
+    restoreActivePlanOnStartup();
   });
 
   mainWindow.on('move', () => {
@@ -450,9 +452,6 @@ function createWindow() {
 
   mainWindow.webContents.on('context-menu', () => {
     const template = [
-      { label: text.hydrateNow, click: () => send('hydrate-now') },
-      { label: text.nightNow, click: () => send('night-now') },
-      { type: 'separator' },
       { label: text.stateIdle, click: () => send('set-state', 'idle') },
       { label: text.stateWave, click: () => send('set-state', 'waving') },
       { label: text.stateWait, click: () => send('set-state', 'waiting') },
@@ -2058,6 +2057,215 @@ ipcMain.on('release-bubble-space', () => {
     bubbleSpaceOriginalBounds = null;
   }
 });
+
+// ===== 计划任务（Planning Bubble）=====
+let planRepo = null;
+try {
+  planRepo = require('../dist/infrastructure/database/repositories/plan-repository.js').planRepository;
+} catch (e) {
+  console.warn('[planning] plan-repository not loaded:', e?.message);
+}
+
+/** 调用 AI 生成或修改计划草案 */
+async function callPlanningAI(userGoal, currentPlan = null) {
+  const config = readApiConfig({ includeSecret: true });
+  if (!config.apiKey) {
+    throw new Error('API key is not configured.');
+  }
+
+  const systemPrompt = `你是用户的桌面宠物助手，擅长帮用户制定可执行的一日计划。
+
+规则：
+- 每个任务必须带开始时间和结束时间（HH:MM 格式）
+- 任务数量 3-6 个，覆盖用户描述的主要目标
+- 时间段不重叠，符合正常人一天的工作节奏
+- 任务要具体可执行，如"完成项目文档大纲"而不是"工作"
+- 主动询问用户是否需要调整
+
+输出格式（严格 JSON，不要包裹在 markdown 代码块中）：
+{
+  "tasks": [
+    { "start_time": "09:00", "end_time": "10:00", "content": "任务内容" }
+  ],
+  "message": "你对用户说的话"
+}`;
+
+  const userMessage = currentPlan
+    ? `当前计划：\n${currentPlan.tasks.map(t => `${t.start_time}-${t.end_time} ${t.content}`).join('\n')}\n\n用户反馈：${userGoal}`
+    : `用户目标：${userGoal}`;
+
+  const response = await fetchWithTimeout(config.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage }
+      ],
+      temperature: 0.7,
+      max_tokens: 2000,
+      stream: false
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`API request failed: ${response.status} ${detail.slice(0, 160)}`);
+  }
+
+  const data = await response.json();
+  const reply = data?.choices?.[0]?.message?.content;
+  if (!reply) {
+    throw new Error('API response did not include a reply.');
+  }
+
+  // 解析 JSON（处理可能的 markdown 代码块包裹）
+  let cleaned = reply.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    throw new Error('AI 返回格式不正确，无法解析为 JSON。');
+  }
+}
+
+/** 获取今日日期（Asia/Shanghai 时区） */
+function getTodayDate() {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+}
+
+ipcMain.handle('planning:start', async () => {
+  if (!newArchReady || !planRepo) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const activePlan = planRepo.getActivePlan();
+  if (activePlan) {
+    return { ok: true, activePlan };
+  }
+  const draftPlan = planRepo.getDraftPlan();
+  if (draftPlan) {
+    return { ok: true, draftPlan };
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('planning:submit-message', async (_event, text) => {
+  if (!newArchReady || !planRepo) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const userGoal = String(text || '').trim();
+  if (!userGoal) {
+    return { ok: false, reason: 'empty-message' };
+  }
+
+  const draftPlan = planRepo.getDraftPlan();
+  const currentPlan = draftPlan ? {
+    tasks: draftPlan.tasks.map(t => ({
+      start_time: t.start_time || '',
+      end_time: t.end_time || '',
+      content: t.content
+    }))
+  } : null;
+
+  try {
+    const aiResult = await callPlanningAI(userGoal, currentPlan);
+    const today = getTodayDate();
+    let planId;
+
+    if (draftPlan) {
+      planId = draftPlan.id;
+      planRepo.deleteTasksByPlanId(planId);
+    } else {
+      planId = `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      planRepo.insert({ id: planId, date: today, status: 'draft' });
+    }
+
+    const tasks = (aiResult.tasks || []).map((t, i) => ({
+      id: `task_${planId}_${i}`,
+      plan_id: planId,
+      content: String(t.content || ''),
+      start_time: String(t.start_time || ''),
+      end_time: String(t.end_time || ''),
+      completed: 0,
+      order_index: i
+    }));
+    planRepo.insertTasks(tasks);
+
+    return {
+      ok: true,
+      plan: { id: planId, date: today, status: 'draft', tasks },
+      message: aiResult.message || '计划已生成，请确认。'
+    };
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'unknown-error' };
+  }
+});
+
+ipcMain.handle('planning:confirm', async () => {
+  if (!newArchReady || !planRepo) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const draftPlan = planRepo.getDraftPlan();
+  if (!draftPlan) {
+    return { ok: false, reason: 'no-draft-plan' };
+  }
+  planRepo.updateStatus(draftPlan.id, 'active');
+  return { ok: true, plan: { ...draftPlan, status: 'active' } };
+});
+
+ipcMain.handle('planning:toggle-task', async (_event, taskId) => {
+  if (!newArchReady || !planRepo) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const activePlan = planRepo.getActivePlan();
+  if (!activePlan) {
+    return { ok: false, reason: 'no-active-plan' };
+  }
+  const task = activePlan.tasks.find(t => t.id === taskId);
+  if (!task) {
+    return { ok: false, reason: 'task-not-found' };
+  }
+  const newCompleted = task.completed === 0;
+  planRepo.toggleTaskCompletion(taskId, newCompleted);
+
+  // 检查是否所有任务都完成
+  const allDone = planRepo.areAllTasksCompleted(activePlan.id);
+  if (allDone) {
+    planRepo.updateStatus(activePlan.id, 'completed');
+  }
+
+  const updatedTasks = planRepo.getTasksByPlanId(activePlan.id);
+  return {
+    ok: true,
+    tasks: updatedTasks,
+    allCompleted: allDone,
+    planStatus: allDone ? 'completed' : 'active'
+  };
+});
+
+ipcMain.handle('planning:get-active', async () => {
+  if (!newArchReady || !planRepo) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const activePlan = planRepo.getActivePlan();
+  return { ok: true, plan: activePlan };
+});
+
+/** 启动时恢复 active plan 到桌面气泡 */
+function restoreActivePlanOnStartup() {
+  if (!newArchReady || !planRepo || !mainWindow) return;
+  const activePlan = planRepo.getActivePlan();
+  if (activePlan) {
+    send('planning:plan-published', activePlan);
+  }
+}
 
 app.whenReady().then(() => {
   loadPetData(app);

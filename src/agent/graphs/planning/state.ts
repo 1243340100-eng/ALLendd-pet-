@@ -59,8 +59,8 @@ export interface AgentAction {
     start_time: string;
     end_time: string;
   };
-  /** 对用户说的话 */
-  message: string;
+  /** 对用户说的话（可选，缺失时由 agent-decide 节点生成默认消息） */
+  message?: string;
 }
 
 /** Graph 状态错误条目 */

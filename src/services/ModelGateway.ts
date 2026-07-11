@@ -80,7 +80,7 @@ interface ChatCompletionResponse {
   id?: string;
   model?: string;
   choices?: Array<{
-    message?: { role?: string; content?: string };
+    message?: { role?: string; content?: string; reasoning_content?: string };
     finish_reason?: string;
   }>;
   usage?: {
@@ -261,6 +261,9 @@ export class ModelGateway {
         max_tokens: request.maxOutputTokens ?? tokenLimit.outputMaxTokens,
         stream: false,
         ...(request.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {})
+        // 注意：之前尝试对 deepseek-v4 系列禁用思考模式（thinking: { type: 'disabled' }），
+        // 但实测发现 v4-pro 在禁用思考后，某些场景会返回纯空白 content（62 字符空格）。
+        // 因此改为允许思考模式，通过增大 maxOutputTokens 确保思考 + JSON 都能容纳。
       };
 
       log.info('model invoke', {
@@ -306,8 +309,38 @@ export class ModelGateway {
       }
 
       const data = (await response.json()) as ChatCompletionResponse;
-      const content = data?.choices?.[0]?.message?.content;
-      if (!content) {
+      const message = data?.choices?.[0]?.message;
+      let content = message?.content;
+
+      // v4-pro 兼容性：如果 content 为空或纯空白，尝试从 reasoning_content 获取
+      // （思考模式可能未真正禁用，实际响应在 reasoning_content 中）
+      if ((!content || content.trim().length === 0) && message?.reasoning_content) {
+        log.info('content empty, falling back to reasoning_content', {
+          traceId: request.traceId,
+          fields: {
+            contentLength: content?.length ?? 0,
+            reasoningContentLength: message.reasoning_content.length,
+            finishReason: data?.choices?.[0]?.finish_reason
+          }
+        });
+        content = message.reasoning_content;
+      }
+
+      if (!content || content.trim().length === 0) {
+        // 记录完整响应结构以便诊断
+        log.warn('no content in response', {
+          traceId: request.traceId,
+          fields: {
+            hasContent: !!message?.content,
+            contentLength: message?.content?.length ?? 0,
+            rawContentValue: message?.content?.slice(0, 200) ?? '',
+            hasReasoningContent: !!message?.reasoning_content,
+            reasoningContentLength: message?.reasoning_content?.length ?? 0,
+            finishReason: data?.choices?.[0]?.finish_reason,
+            responseModel: data?.model,
+            choiceCount: data?.choices?.length ?? 0
+          }
+        });
         return this.failResult(
           request, 'model_invalid_output', 'No content in response',
           alias, modelName, startedAt

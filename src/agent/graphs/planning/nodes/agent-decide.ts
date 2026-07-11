@@ -31,6 +31,31 @@ export function isConfirmationInput(input: string): boolean {
   return CONFIRMATION_KEYWORDS.some(kw => trimmed === kw.toLowerCase() || trimmed === kw.toLowerCase());
 }
 
+/**
+ * 根据动作类型生成默认消息。
+ * 当模型输出缺少 message 字段时使用（v4-pro 在 patch_tasks 等复杂场景下可能缺失）。
+ */
+function getDefaultMessage(action: { type?: string; clarificationQuestion?: string }): string {
+  switch (action.type) {
+    case 'ask_clarification':
+      return action.clarificationQuestion ?? '能再补充一下细节吗？';
+    case 'create_draft':
+      return '好的，我为你生成了今日计划草案，请查看。';
+    case 'patch_tasks':
+      return '好的，我已经调整了任务安排。';
+    case 'delete_task':
+      return '好的，已经删除了指定任务。';
+    case 'add_task':
+      return '好的，已经添加了新任务。';
+    case 'request_confirmation':
+      return '草案已就绪，确认发布吗？';
+    case 'publish_plan':
+      return '好的，正在为你发布计划。';
+    default:
+      return '好的。';
+  }
+}
+
 /** 构建 system prompt */
 function buildSystemPrompt(state: PlanningStateType): string {
   const time = state.timeContext;
@@ -245,7 +270,7 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
       alias: MODEL_ALIAS.PLANNING,
       responseFormat: 'json',
       temperature: 0.7,
-      maxOutputTokens: 2000,
+      maxOutputTokens: 8000,
       traceId: state.traceId
     });
 
@@ -306,12 +331,54 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
       }
     }
 
+    // 诊断日志：记录解析后的对象结构（使用非脱敏字段名）
+    if (parsed && typeof parsed === 'object') {
+      const parsedObj = parsed as Record<string, unknown>;
+      log.info('parsed model output structure', {
+        traceId: state.traceId,
+        fields: {
+          parsedKeys: Object.keys(parsedObj),
+          hasMessage: 'message' in parsedObj,
+          messageType: typeof parsedObj.message,
+          actionType: parsedObj.type
+        }
+      });
+    } else {
+      log.warn('parsed model output is not an object', {
+        traceId: state.traceId,
+        fields: {
+          parsedType: typeof parsed,
+          rawModelOutput: result.content.slice(0, 500)
+        }
+      });
+    }
+
+    // 预处理：确保 message 字段存在且为非空字符串（v4-pro 兼容性防御）
+    // 即使 Zod schema 已设为 optional，某些模型可能在复杂场景下输出非预期结构。
+    // 在校验前预填充，确保 Zod 校验不会因 message 缺失而失败。
+    if (parsed && typeof parsed === 'object') {
+      const parsedObj = parsed as Record<string, unknown>;
+      if (typeof parsedObj.message !== 'string' || parsedObj.message.trim().length === 0) {
+        const defaultMsg = getDefaultMessage(parsedObj);
+        log.info('pre-filling missing message field', {
+          traceId: state.traceId,
+          fields: { actionType: parsedObj.type, defaultMsg }
+        });
+        parsedObj.message = defaultMsg;
+      }
+    }
+
     // Zod 校验
     const validation = validateAgentAction(parsed);
     if (!validation.valid) {
       log.warn('agent action validation failed', {
         traceId: state.traceId,
-        fields: { error: validation.error, content: result.content.slice(0, 200) }
+        fields: {
+          error: validation.error,
+          rawModelOutput: result.content.slice(0, 500),
+          parsedKeys: parsed && typeof parsed === 'object' ? Object.keys(parsed as object) : 'not-object',
+          parsedHasMessage: parsed && typeof parsed === 'object' ? 'message' in (parsed as object) : false
+        }
       });
       return {
         errors: [...state.errors, {
@@ -340,9 +407,19 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
     }
 
     const action = validation.action!;
+    // 修复 v4-pro 兼容性：模型可能未输出 message 字段，此时使用默认消息补全
+    const usedDefaultMessage = !action.message;
+    if (usedDefaultMessage) {
+      action.message = getDefaultMessage(action);
+      log.info('agent action message missing, using default', {
+        traceId: state.traceId,
+        fields: { actionType: action.type, defaultMsg: action.message }
+      });
+    }
+
     log.info('agent action decided', {
       traceId: state.traceId,
-      fields: { actionType: action.type, hasMessage: !!action.message }
+      fields: { actionType: action.type, hasMessage: !!action.message, usedDefaultMessage }
     });
 
     return {

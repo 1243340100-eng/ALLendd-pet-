@@ -2425,6 +2425,124 @@ async function testManualEditGeneratesTrace(): Promise<void> {
   }
 }
 
+// ===== 测试 33：模型输出缺少 message 字段时使用默认消息（v4-pro 兼容性） =====
+async function testPatchTasksWithoutMessage(): Promise<void> {
+  const dbPath = tempDbPath();
+  try {
+    const { userId, characterId } = setupTestEnv(dbPath);
+    const db = getDatabase();
+    cleanupPlans();
+
+    // 先创建一个草案
+    const planId = `plan_${Date.now()}_test33`;
+    const today = '2026-07-11'; // 固定日期，匹配 FixedClock
+    const tp33 = futureTimePairs(2);
+    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insertTasks([
+      { id: 't1', plan_id: planId, content: '上午工作', start_time: tp33[0].start_time, end_time: tp33[0].end_time, completed: 0, order_index: 0 },
+      { id: 't2', plan_id: planId, content: '下午任务', start_time: tp33[1].start_time, end_time: tp33[1].end_time, completed: 0, order_index: 1 }
+    ]);
+
+    const tasks = planRepository.getTasksByPlanId(planId);
+    const afternoonTaskId = tasks.find(t => t.content === '下午任务')?.id;
+    // 新结束时间必须在 start_time 和 end_time 之间（11:30-12:00 → 11:45）
+    const newEndTime = '11:45';
+
+    // 模型返回 patch_tasks 但故意不包含 message 字段（模拟 v4-pro 行为）
+    const actionWithoutMessage = {
+      type: 'patch_tasks' as const,
+      patches: [
+        { id: afternoonTaskId, end_time: newEndTime }
+      ]
+      // 故意省略 message 字段
+    };
+    const runner = createRunner(db, createMockFetchForPlanning(actionWithoutMessage));
+
+    const dto = await runner.submitMessage({
+      userId,
+      characterId,
+      userInput: '下午不要太满'
+    });
+
+    // 校验：不应报错 "message: Invalid input"
+    check('PatchNoMessage: ok=true', dto.ok === true);
+    check('PatchNoMessage: actionType=patch_tasks', dto.actionType === 'patch_tasks');
+    // 校验：应使用默认消息补全
+    check('PatchNoMessage: has default message', (dto.message?.length ?? 0) > 0);
+    // 校验：任务确实被修改了
+    const updatedTasks = planRepository.getTasksByPlanId(planId);
+    const patchedTask = updatedTasks.find(t => t.id === afternoonTaskId);
+    check('PatchNoMessage: task end_time changed', patchedTask?.end_time === newEndTime);
+  } finally {
+    closeDatabase();
+    cleanupDbFile(dbPath);
+  }
+}
+
+/**
+ * 创建 mock fetch，返回 content 为空但 reasoning_content 有值的响应。
+ * 模拟 deepseek-v4-pro 在思考模式下 content 为空白的场景。
+ */
+function createMockFetchReasoningContent(action: AgentAction, model: string = 'deepseek-v4-pro') {
+  const body = JSON.stringify(action);
+  return async (_url: string, _options?: RequestInit): Promise<Response> => {
+    const mockResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'test-reasoning-id',
+        model,
+        choices: [{
+          // content 为空字符串，实际响应在 reasoning_content 中
+          message: { role: 'assistant', content: '   ', reasoning_content: body },
+          finish_reason: 'stop'
+        }],
+        usage: { prompt_tokens: 200, completion_tokens: 100, total_tokens: 300 }
+      }),
+      text: async () => body
+    } as unknown as Response;
+    return mockResponse;
+  };
+}
+
+// ===== 测试 34：reasoning_content 回退（v4-pro 兼容性）=====
+async function testReasoningContentFallback(): Promise<void> {
+  const dbPath = tempDbPath();
+  try {
+    const { userId, characterId } = setupTestEnv(dbPath);
+    const db = getDatabase();
+    cleanupPlans();
+
+    // 模型返回 create_draft，但 content 为空白，实际 JSON 在 reasoning_content 中
+    const action: AgentAction = {
+      type: 'create_draft',
+      tasks: [
+        { start_time: '11:00', end_time: '12:00', content: '测试任务' }
+      ],
+      message: '计划已生成'
+    };
+    const runner = createRunner(db, createMockFetchReasoningContent(action));
+
+    const dto = await runner.submitMessage({
+      userId,
+      characterId,
+      userInput: '帮我安排一个上午的任务'
+    });
+
+    // 校验：应从 reasoning_content 回退获取实际响应，不报错
+    check('ReasoningFallback: ok=true', dto.ok === true);
+    check('ReasoningFallback: actionType=create_draft', dto.actionType === 'create_draft');
+    check('ReasoningFallback: has message', (dto.message?.length ?? 0) > 0);
+    // 校验：草案确实创建了
+    check('ReasoningFallback: plan created', dto.plan !== undefined && dto.plan !== null);
+    const draft = planRepository.getDraftPlan();
+    check('ReasoningFallback: draft in DB', draft !== null && draft !== undefined);
+  } finally {
+    closeDatabase();
+    cleanupDbFile(dbPath);
+  }
+}
+
 // ===== 运行所有测试 =====
 async function main(): Promise<void> {
   console.log('=== PlanningGraph 测试开始 ===\n');
@@ -2500,6 +2618,10 @@ async function main(): Promise<void> {
   await testTraceSanitization();
   console.log('');
   await testManualEditGeneratesTrace();
+  console.log('');
+  await testPatchTasksWithoutMessage();
+  console.log('');
+  await testReasoningContentFallback();
 
   console.log('\n=== 测试结果 ===');
   console.log(`PASS: ${pass}, FAIL: ${fail}`);

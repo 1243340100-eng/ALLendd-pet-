@@ -69,7 +69,9 @@ export const agentActionSchema = z.object({
   taskId: z.string().optional(),
   taskIndex: z.number().int().min(0).optional(),
   newTask: newTaskSchema.optional(),
-  message: z.string().min(1).max(1000)
+  // 修复 v4-pro 兼容性：部分模型在复杂场景（如 patch_tasks）下可能不输出 message 字段。
+  // 将 message 设为可选，缺失时由 agent-decide 节点根据动作类型生成默认消息。
+  message: z.string().min(1).max(1000).optional()
 }).refine(
   (data) => {
     // 根据类型校验必填字段

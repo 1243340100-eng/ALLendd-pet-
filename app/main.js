@@ -2023,6 +2023,42 @@ ipcMain.on('drag-animation-stop', () => {
   }, 120);
 });
 
+// 气泡空间扩展：reminder bubble 显示时向左扩大窗口宽度，消失后恢复
+let bubbleSpaceOriginalBounds = null;
+
+ipcMain.on('request-bubble-space', (_event, extraWidth) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  // 第一次请求时保存原始 bounds，后续请求不覆盖
+  if (!bubbleSpaceOriginalBounds) {
+    bubbleSpaceOriginalBounds = { ...mainWindow.getBounds() };
+  }
+  const workArea = screen.getDisplayMatching(bubbleSpaceOriginalBounds).workArea;
+  const safetyMargin = 16;
+  const totalExtra = Math.round(Number(extraWidth) || 0) + safetyMargin;
+  // 向左扩展窗口（reminder bubble 在桌宠左侧）
+  let newX = bubbleSpaceOriginalBounds.x - totalExtra;
+  let newWidth = bubbleSpaceOriginalBounds.width + totalExtra;
+  // 不能超出屏幕左边界
+  if (newX < workArea.x) {
+    newWidth -= (workArea.x - newX);
+    newX = workArea.x;
+  }
+  mainWindow.setBounds({
+    x: newX,
+    y: bubbleSpaceOriginalBounds.y,
+    width: newWidth,
+    height: bubbleSpaceOriginalBounds.height
+  });
+});
+
+ipcMain.on('release-bubble-space', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (bubbleSpaceOriginalBounds) {
+    mainWindow.setBounds(bubbleSpaceOriginalBounds);
+    bubbleSpaceOriginalBounds = null;
+  }
+});
+
 app.whenReady().then(() => {
   loadPetData(app);
   // 先初始化新架构，再创建窗口，确保 did-finish-load 时 newArchReady 已就绪

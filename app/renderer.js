@@ -4,6 +4,7 @@ const bubble = document.getElementById('bubble');
 const reminderBubble = document.getElementById('reminderBubble');
 const reminderStack = document.getElementById('reminderStack');
 let reminderBubbleTimer = null;
+let activeBubbleCount = 0;
 const frameworkNotice = document.getElementById('frameworkNotice');
 const apiSettings = document.getElementById('apiSettings');
 const apiPanel = document.getElementById('apiPanel');
@@ -602,6 +603,11 @@ function showBubble(message, duration = 12000) {
  */
 function showReminderBubble(message, duration = 20000) {
   if (!appVisible || !reminderStack) return;
+  // 第一个气泡出现时请求扩大窗口宽度
+  if (activeBubbleCount === 0) {
+    window.petAPI?.requestBubbleSpace?.(320);
+  }
+  activeBubbleCount++;
   // 动态创建气泡并 append 到堆叠容器，支持多个提醒垂直堆叠
   const el = document.createElement('div');
   el.className = 'reminder-bubble';
@@ -620,10 +626,19 @@ function showReminderBubble(message, duration = 20000) {
 
 function removeReminderBubble(el) {
   if (!el || !el.parentNode) return;
+  if (el.dataset.removing === '1') return;
+  el.dataset.removing = '1';
   el.classList.add('hidden');
   // 等待过渡动画完成后再移除 DOM
   setTimeout(() => {
-    if (el.parentNode) el.remove();
+    if (el.parentNode) {
+      el.remove();
+      activeBubbleCount = Math.max(0, activeBubbleCount - 1);
+      // 所有气泡都消失后恢复窗口原始尺寸
+      if (activeBubbleCount === 0) {
+        window.petAPI?.releaseBubbleSpace?.();
+      }
+    }
   }, 250);
 }
 

@@ -54,5 +54,8 @@ contextBridge.exposeInMainWorld('petAPI', {
   focusWindow: () => ipcRenderer.invoke('window:focus'),
   setWindowScale: (scale) => ipcRenderer.invoke('set-window-scale', scale),
   startDragAnimation: () => ipcRenderer.send('drag-animation-start'),
-  stopDragAnimation: () => ipcRenderer.send('drag-animation-stop')
+  stopDragAnimation: () => ipcRenderer.send('drag-animation-stop'),
+  // 气泡空间扩展：reminder bubble 显示时请求扩大窗口宽度，消失后恢复
+  requestBubbleSpace: (extraWidth) => ipcRenderer.send('request-bubble-space', extraWidth),
+  releaseBubbleSpace: () => ipcRenderer.send('release-bubble-space')
 });

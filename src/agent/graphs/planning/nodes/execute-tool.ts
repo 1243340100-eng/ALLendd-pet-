@@ -122,13 +122,16 @@ export function createExecuteToolNode() {
     }
 
     // 获取或创建 plan ID 和 date
-    // 日历扩展：优先使用 targetDate（从 load_calendar_context 解析），其次 currentDraft.date，最后今天
     const today = state.timeContext
       ? state.timeContext.localDisplay.slice(0, 10).replace(/-/g, '-')
       : new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
     const planId = state.currentDraft?.planId ?? action.planId ?? `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const date = state.currentDraft?.date ?? (state.targetDate || today);
+
+    // V7 修复：优先使用 action.target_date（模型输出的目标日期），其次 state.targetDate（日历入口），
+    // 最后今天。这样从计划模式输入框用自然语言指定未来日期时，date 和 mode 都正确。
+    const effectiveTargetDate = action.target_date || state.targetDate || today;
+    const date = state.currentDraft?.date ?? effectiveTargetDate;
 
     // 从时间上下文获取当前小时和分钟（用于校验过去时间）
     const currentTimeHour = state.timeContext
@@ -138,9 +141,15 @@ export function createExecuteToolNode() {
       ? parseInt(state.timeContext.localDisplay.slice(14, 16), 10)
       : new Date().getMinutes();
 
-    // 日历扩展：对 create_draft 和 publish_plan 校验目标日期
-    if (action.type === 'create_draft' || action.type === 'publish_plan') {
-      const effectiveTargetDate = action.target_date || state.targetDate || today;
+    // V7 修复：对所有写操作校验目标日期，并基于 action.target_date 重算 mode。
+    // 之前只对 create_draft/publish_plan 校验，且传给 executePlanningTool 的 mode 取自
+    // state.targetDateMode（load_calendar_context 设为 'today'），而非 action.target_date
+    // 的实际 mode。导致从输入框说"明天"时，future_date 被错误按 today 校验。
+    const writeActionTypes = ['create_draft', 'publish_plan', 'patch_tasks', 'add_task'];
+    let effectiveMode: 'future_date' | 'today' | 'past_date' | undefined =
+      (state.targetDateMode || undefined) as 'future_date' | 'today' | 'past_date' | undefined;
+
+    if (writeActionTypes.includes(action.type)) {
       const dateValidation = validateTargetDate(effectiveTargetDate, today, { allowPast: false });
       if (!dateValidation.valid) {
         const durationMs = Date.now() - phaseStartMs;
@@ -169,10 +178,14 @@ export function createExecuteToolNode() {
           autoCorrectionCount: state.isManualEdit ? state.autoCorrectionCount : state.autoCorrectionCount + 1
         };
       }
+      // V7 修复：用 action.target_date 计算的 mode 覆盖 state 的旧 mode
+      if (dateValidation.mode) {
+        effectiveMode = dateValidation.mode;
+      }
     }
 
     // 执行 Planning Tool（Zod 校验已在 agent_decide 完成，此处执行写操作）
-    // V7 修复：传入 targetDateMode，让 create_draft/patch_tasks/add_task 按 future_date 模式校验
+    // V7 修复：传入基于 action.target_date 重算的 effectiveMode
     const result = executePlanningTool(action, {
       planId,
       date,
@@ -181,7 +194,7 @@ export function createExecuteToolNode() {
       currentTimeHour,
       currentTimeMinute,
       scope: { userId: state.userId, characterId: state.characterId },
-      targetDateMode: (state.targetDateMode || undefined) as import('../tools').TargetDateMode | undefined
+      targetDateMode: effectiveMode
     });
 
     if (!result.success) {

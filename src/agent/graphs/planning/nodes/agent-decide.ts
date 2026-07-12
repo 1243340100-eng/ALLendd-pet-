@@ -12,7 +12,7 @@ import type { PlanningStateType } from '../state';
 import type { ModelGateway } from '../../../../services/ModelGateway';
 import { MODEL_ALIAS } from '../../../../shared/constants';
 import { getDefaultAppConfig, applyUserModelAliases, resolveModelName } from '../../../../infrastructure/config/config-loader';
-import { validateAgentAction, getDefaultMessageForAction } from '../tools';
+import { validateAgentAction, getDefaultMessageForAction, validateTargetDate } from '../tools';
 import { settingsRepository } from '../../../../infrastructure/database/repositories/settings-repository';
 import { createLogger } from '../../../../infrastructure/logging/logger';
 import { sanitizePlanningTraceText } from '../sanitize';
@@ -456,7 +456,10 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
       fields: { actionType: action.type, hasMessage: !!action.message, usedDefaultMessage }
     });
 
-    return {
+    // V7 修复：模型输出了 target_date 时，同步到 state，供 execute_tool 和后续节点使用。
+    // 之前 agent_decide 不同步 target_date，导致 execute_tool 只能用 state.targetDateMode
+    // （load_calendar_context 设为 'today'），而非 action.target_date 的实际 mode。
+    const stateUpdate: Partial<PlanningStateType> = {
       agentAction: action,
       responseText: action.message,
       shouldAskUser: action.type === 'ask_clarification',
@@ -479,5 +482,26 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
         durationMs: result.durationMs
       }]
     };
+
+    if (action.target_date) {
+      const todayDate = state.timeContext
+        ? state.timeContext.localDisplay.slice(0, 10).replace(/-/g, '-')
+        : new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+      const dateValidation = validateTargetDate(action.target_date, todayDate, { allowPast: true });
+      if (dateValidation.valid && dateValidation.mode) {
+        stateUpdate.targetDate = action.target_date;
+        stateUpdate.targetDateMode = dateValidation.mode;
+        // 同步 planningThreadId（如果原本为空），用于 checkpoint 隔离
+        if (!state.planningThreadId) {
+          stateUpdate.planningThreadId = `date:${action.target_date}`;
+        }
+        log.info('agent action target_date synced to state', {
+          traceId: state.traceId,
+          fields: { targetDate: action.target_date, mode: dateValidation.mode }
+        });
+      }
+    }
+
+    return stateUpdate;
   };
 }

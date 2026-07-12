@@ -670,11 +670,17 @@ export function executePlanningTool(
         return { success: false, error: `发布前校验失败: ${publishValidation.error}` };
       }
       try {
-        const ok = planRepository.publishPlan(planId);
+        // V7 修复：根据目标日期模式决定发布后的状态
+        // - future_date：scheduled（等待 CalendarActivationService 在日期到达时转为 active）
+        // - today：active（今天即可开始执行，进入提醒栏）
+        // - past_date：理论上不会到达（validateTargetDate 上层已拒绝）
+        const targetStatus: 'active' | 'scheduled' =
+          validationMode === 'future_date' ? 'scheduled' : 'active';
+        const ok = planRepository.publishPlan(planId, targetStatus);
         if (!ok) {
           return { success: false, error: '发布失败，可能未确认或状态不正确' };
         }
-        log.info('planning tool: publish_plan', { fields: { planId } });
+        log.info('planning tool: publish_plan', { fields: { planId, targetStatus, validationMode } });
         return { success: true, draft: currentDraft, published: true };
       } catch (error) {
         return { success: false, error: (error as Error)?.message ?? 'publish_plan failed' };

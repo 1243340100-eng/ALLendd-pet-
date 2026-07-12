@@ -992,7 +992,12 @@ export async function handlePlanningManualEdit(payload: {
     return { ok: false, reason: 'missing-plan-id' };
   }
 
-  const draftPlan = planRepository.getDraftPlan();
+  // V7 修复：按 scope 隔离查询草案，避免跨用户/角色串扰
+  const userId = settingsRepository.get('user_id') ?? 'default-user';
+  const characterId = settingsRepository.get('active_character_id')
+    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const draftScope = { userId, characterId };
+  const draftPlan = planRepository.getDraftPlanByScope(draftScope);
   if (!draftPlan || draftPlan.id !== planId) {
     return { ok: false, reason: 'draft-not-found' };
   }
@@ -1049,9 +1054,20 @@ export async function handlePlanningManualEdit(payload: {
 /**
  * 获取当前活跃计划（含任务）。
  * 供 main.js 的 planning:get-active IPC 调用。
+ *
+ * V7 修复：改用 scope 隔离 + 日期过滤。之前 getActivePlan() 查询全局所有 active 计划，
+ * 导致未来日期的计划（错误地被设为 active）也出现在今天的提醒栏。
+ * 现在只返回今天的 active 计划。
  */
 export function getActivePlan(): any | null {
-  const plan = planRepository.getActivePlan();
+  const userId = settingsRepository.get('user_id') ?? 'default-user';
+  const characterId = settingsRepository.get('active_character_id')
+    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const scope = { userId, characterId };
+  const localDate = timeService
+    ? timeService.getTodayDateString()
+    : new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const plan = planRepository.getTodayActivePlan(scope, localDate);
   if (!plan) return null;
   return toPlanDraft(
     { id: plan.id, date: plan.date, tasks: plan.tasks },
@@ -1062,9 +1078,15 @@ export function getActivePlan(): any | null {
 /**
  * 获取当前草案（含任务）。
  * 供 main.js 的 planning:start IPC 调用。
+ *
+ * V7 修复：改用 scope 隔离。之前 getDraftPlan() 查询全局，违反 scope 隔离硬约束。
  */
 export function getDraftPlan(): any | null {
-  const plan = planRepository.getDraftPlan();
+  const userId = settingsRepository.get('user_id') ?? 'default-user';
+  const characterId = settingsRepository.get('active_character_id')
+    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const scope = { userId, characterId };
+  const plan = planRepository.getDraftPlanByScope(scope);
   if (!plan) return null;
   return toPlanDraft(
     { id: plan.id, date: plan.date, tasks: plan.tasks },
@@ -1107,7 +1129,15 @@ export function handlePlanningToggleTask(taskId: string): {
   planStatus?: string;
   reason?: string;
 } {
-  const activePlan = planRepository.getActivePlan();
+  // V7 修复：按 scope + 今天日期过滤，只切换今天的 active 计划任务
+  const userId = settingsRepository.get('user_id') ?? 'default-user';
+  const characterId = settingsRepository.get('active_character_id')
+    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const toggleScope = { userId, characterId };
+  const localDate = timeService
+    ? timeService.getTodayDateString()
+    : new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const activePlan = planRepository.getTodayActivePlan(toggleScope, localDate);
   if (!activePlan) {
     return { ok: false, reason: 'no-active-plan' };
   }
@@ -1148,13 +1178,19 @@ export function getPlanningModelInfo(): {
   const configured = settingsRepository.get('model_alias_planning');
   const resolvedModel = settingsRepository.getPlanningModelResolved();
 
+  // V7 修复：按 scope 隔离查询，避免跨用户/角色串扰
+  const userId = settingsRepository.get('user_id') ?? 'default-user';
+  const characterId = settingsRepository.get('active_character_id')
+    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const modelScope = { userId, characterId };
+
   // 从最新的 draft/active 计划获取 response_model
   let responseModel: string | null = null;
-  const draft = planRepository.getDraftPlan();
+  const draft = planRepository.getDraftPlanByScope(modelScope);
   if (draft?.response_model) {
     responseModel = draft.response_model;
   } else {
-    const active = planRepository.getActivePlan();
+    const active = planRepository.getActivePlanByScope(modelScope);
     if (active?.response_model) {
       responseModel = active.response_model;
     }

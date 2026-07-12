@@ -2,7 +2,7 @@
   color-scheme: light;
   --cell-w: 192px;
   --cell-h: 208px;
-  --scale: 1.18;
+  --scale: 0.826;
   --pet-w: calc(var(--cell-w) * var(--scale));
   --pet-h: calc(var(--cell-h) * var(--scale));
   --sheet-w: calc(1536px * var(--scale));
@@ -343,7 +343,11 @@ body {
   font-weight: 600;
   box-shadow: 0 4px 12px rgba(42, 33, 50, 0.1);
   cursor: pointer;
-  transition: transform 150ms, box-shadow 150ms;
+  pointer-events: auto;
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0) scale(1);
+  transition: opacity 220ms var(--ease-out-expo), transform 220ms var(--ease-out-expo), visibility 220ms, box-shadow 150ms;
 }
 
 .plan-bubble__restore:hover {
@@ -351,37 +355,27 @@ body {
   box-shadow: 0 6px 16px rgba(42, 33, 50, 0.14);
 }
 
+@keyframes plan-restore-enter {
+  from { opacity: 0; visibility: hidden; transform: translateX(calc(-20px * var(--scale))) scale(0.94); }
+  to { opacity: 1; visibility: visible; transform: translateX(0) scale(1); }
+}
+
+.plan-bubble__restore--enter {
+  animation: plan-restore-enter 260ms var(--ease-out-expo);
+}
+
+.plan-bubble__restore--leave {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(calc(-20px * var(--scale))) scale(0.94);
+  pointer-events: none;
+}
+
 /* 修复：计划相关元素带有 hidden 类时必须真正隐藏，避免默认占位/显示 */
 #reminderBubble.hidden,
 .reminder-bubble--planning.hidden,
 .plan-bubble__restore.hidden {
   display: none;
-}
-
-/* 窗口较小时左侧空间不足，提醒气泡自动移到桌宠右侧，避免被窗口边缘截断 */
-@media (max-width: 640px) {
-  .reminder-stack {
-    right: auto;
-    left: calc(50% + var(--pet-w) / 2 + var(--bubble-gap));
-    align-items: flex-start;
-  }
-
-  .reminder-bubble,
-  .reminder-bubble--planning {
-    max-width: min(calc(280px * var(--scale)), calc(50vw - var(--pet-w) / 2 - var(--bubble-gap) - 8px));
-  }
-
-  .reminder-bubble::after {
-    right: auto;
-    left: calc(-8px * var(--scale));
-    border-right: none;
-    border-left: 1px solid rgba(65, 48, 84, 0.12);
-    transform: translateY(-50%) rotate(-45deg);
-  }
-
-  .reminder-bubble.hidden {
-    transform: translateX(calc(-20px * var(--scale)));
-  }
 }
 
 .controls {
@@ -514,9 +508,10 @@ body {
   position: absolute;
   z-index: 30;
   left: 50%;
-  top: var(--panel-top);
+  top: auto;
+  bottom: calc(var(--stage-bottom-pad) + var(--pet-h) + calc(10px * var(--scale)));
   width: min(calc(292px * var(--scale)), calc(100vw - calc(20px * var(--scale))));
-  max-height: calc(100vh - var(--panel-top) - var(--panel-safe-bottom));
+  max-height: calc(100vh - var(--stage-bottom-pad) - var(--pet-h) - calc(70px * var(--scale)));
   transform: translateX(-50%) translateY(0) scale(1);
   display: flex;
   flex-direction: column;
@@ -536,8 +531,13 @@ body {
 .chat-panel.hidden {
   opacity: 0;
   visibility: hidden;
-  transform: translateX(-50%) translateY(-14px) scale(0.98);
+  transform: translateX(-50%) translateY(14px) scale(0.98);
   pointer-events: none;
+}
+
+/* 计划模式下让面板占满可用的垂直空间，确保任务栏至少显示两个任务 */
+.chat-panel:has(.planning-view:not(.hidden)) {
+  min-height: calc(100vh - var(--stage-bottom-pad) - var(--pet-h) - calc(70px * var(--scale)));
 }
 
 .chat-panel__head {
@@ -594,6 +594,10 @@ body {
   max-height: min(250px, calc(100vh - 120px));
   overflow: auto;
   padding-right: 2px;
+}
+
+.chat-log.hidden {
+  display: none;
 }
 
 .chat-msg {
@@ -697,7 +701,7 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 10px;
+  padding: 8px 10px;
   border-radius: 8px;
   background: rgba(246, 242, 251, 0.7);
   color: #5c427a;
@@ -719,7 +723,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 160px;
+  max-height: 120px;
   overflow-y: auto;
   padding: 4px 0;
   flex-shrink: 0;
@@ -790,7 +794,7 @@ body {
   flex-direction: column;
   gap: 6px;
   flex: 1;
-  min-height: 150px;
+  min-height: 180px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -1431,3 +1435,386 @@ input::placeholder {
   transform: translateY(0);
   box-shadow: 0 3px 10px rgba(107, 79, 160, 0.22);
 }
+
+/* ===== 日历面板（V7 跨日期计划）===== */
+.calendar-panel {
+  position: absolute;
+  left: 50%;
+  bottom: var(--panel-safe-bottom);
+  transform: translateX(-50%);
+  width: min(320px, calc(100vw - calc(24px * var(--scale))));
+  max-height: calc(100vh - var(--panel-safe-bottom) - var(--panel-top) - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(92, 66, 122, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #342940;
+  box-shadow: 0 12px 34px rgba(42, 33, 50, 0.2);
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+
+.calendar-panel.hidden {
+  display: none;
+}
+
+.calendar-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(92, 66, 122, 0.12);
+  font-size: 13px;
+}
+
+.calendar-panel__head strong {
+  color: #5c427a;
+  font-size: 13px;
+}
+
+.calendar-panel__head button {
+  min-width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #7a6b8a;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.calendar-panel__head button:hover {
+  background: rgba(92, 66, 122, 0.08);
+  transform: none;
+}
+
+.calendar-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.calendar-toolbar__nav {
+  min-width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(92, 66, 122, 0.2);
+  border-radius: 6px;
+  background: rgba(246, 242, 251, 0.9);
+  color: #5c427a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.calendar-toolbar__nav:hover {
+  background: rgba(239, 232, 255, 0.95);
+  border-color: rgba(92, 66, 122, 0.35);
+  transform: none;
+}
+
+.calendar-toolbar__label {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #5c427a;
+}
+
+.calendar-toolbar__today {
+  min-width: 44px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(92, 66, 122, 0.2);
+  border-radius: 6px;
+  background: rgba(246, 242, 251, 0.9);
+  color: #5c427a;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.calendar-toolbar__today:hover {
+  background: rgba(239, 232, 255, 0.95);
+  border-color: rgba(92, 66, 122, 0.35);
+  transform: none;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  padding: 2px 0;
+  text-align: center;
+}
+
+.calendar-weekdays span {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #9e92ad;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  min-height: 180px;
+}
+
+.calendar-grid__loading {
+  grid-column: 1 / -1;
+  padding: 16px;
+  text-align: center;
+  font-size: 11px;
+  color: #9e92ad;
+}
+
+.calendar-grid__cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #342940;
+  font-size: 11.5px;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 120ms, border-color 120ms;
+}
+
+.calendar-grid__cell:hover {
+  background: rgba(239, 232, 255, 0.6);
+  border-color: rgba(92, 66, 122, 0.18);
+  transform: none;
+}
+
+.calendar-grid__cell--blank {
+  cursor: default;
+  background: transparent;
+  border: none;
+}
+
+.calendar-grid__cell--blank:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
+.calendar-grid__cell--today {
+  border-color: rgba(124, 95, 163, 0.5);
+  background: rgba(239, 232, 255, 0.3);
+}
+
+.calendar-grid__cell--selected {
+  background: #5c427a;
+  color: #fff;
+  border-color: #5c427a;
+}
+
+.calendar-grid__cell--selected .calendar-grid__badge {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.calendar-grid__day {
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+.calendar-grid__badge {
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: rgba(92, 66, 122, 0.18);
+  color: #5c427a;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+.calendar-grid__check {
+  position: absolute;
+  bottom: 1px;
+  left: 2px;
+  color: #4a8a52;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.calendar-grid__cell--selected .calendar-grid__check {
+  color: #b6f0bc;
+}
+
+/* 状态颜色标记（边框颜色暗示） */
+.calendar-grid__cell--draft {
+  border-color: rgba(180, 140, 60, 0.4);
+}
+
+.calendar-grid__cell--scheduled {
+  border-color: rgba(60, 130, 180, 0.4);
+}
+
+.calendar-grid__cell--active {
+  border-color: rgba(92, 66, 122, 0.55);
+  background: rgba(239, 232, 255, 0.4);
+}
+
+.calendar-grid__cell--completed {
+  border-color: rgba(74, 138, 82, 0.4);
+}
+
+.calendar-grid__cell--cancelled {
+  opacity: 0.55;
+}
+
+.calendar-grid__cell--expired {
+  opacity: 0.7;
+  border-color: rgba(166, 58, 71, 0.3);
+}
+
+/* 日期详情面板 */
+.calendar-detail {
+  margin-top: 6px;
+  padding: 8px;
+  border-top: 1px solid rgba(92, 66, 122, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calendar-detail.hidden {
+  display: none;
+}
+
+.calendar-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.calendar-detail__head button {
+  min-width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: #7a6b8a;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.calendar-detail__head button:hover {
+  background: rgba(92, 66, 122, 0.08);
+  transform: none;
+}
+
+.calendar-detail__status {
+  font-size: 11px;
+  color: #5c427a;
+  font-weight: 600;
+}
+
+.calendar-detail__tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.calendar-detail__task {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(246, 242, 251, 0.6);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.calendar-detail__task--completed {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.calendar-detail__task-time {
+  flex-shrink: 0;
+  color: #7a6b8a;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-detail__task-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.calendar-detail__empty {
+  padding: 8px;
+  text-align: center;
+  font-size: 11px;
+  color: #9e92ad;
+}
+
+.calendar-detail__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.calendar-detail__actions .hidden {
+  display: none;
+}
+
+.calendar-detail__btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(92, 66, 122, 0.25);
+  border-radius: 6px;
+  background: rgba(246, 242, 251, 0.9);
+  color: #5c427a;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.calendar-detail__btn:hover {
+  background: rgba(239, 232, 255, 0.95);
+  border-color: rgba(92, 66, 122, 0.4);
+  transform: none;
+}
+
+.calendar-detail__btn--create {
+  background: linear-gradient(180deg, #8b6fc4 0%, #6b4fa0 100%);
+  color: #fff;
+  border-color: #6b4fa0;
+}
+
+.calendar-detail__btn--create:hover {
+  background: linear-gradient(180deg, #9678d0 0%, #7658ad 100%);
+  filter: brightness(1.03);
+}
+

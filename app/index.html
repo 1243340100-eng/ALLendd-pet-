@@ -73,6 +73,7 @@
           <strong id="chatPanelTitle">聊天</strong>
           <div class="chat-panel__actions">
             <button id="planModeToggle" type="button" class="chat-panel__plan-btn" aria-label="进入计划模式">📝 计划</button>
+            <button id="calendarToggle" type="button" class="chat-panel__plan-btn" aria-label="打开日历">📅 日历</button>
             <button id="chatClose" type="button" aria-label="关闭聊天">&#x00D7;</button>
           </div>
         </div>
@@ -102,6 +103,35 @@
           <input id="chatInput" type="text" autocomplete="off" maxlength="300" placeholder="和 Pet 说点什么...">
           <button id="chatSend" type="submit">发送</button>
         </form>
+      </section>
+
+      <section id="calendarPanel" class="calendar-panel hidden" aria-label="日历与计划">
+        <div class="calendar-panel__head">
+          <strong>日历</strong>
+          <button id="calendarClose" type="button" aria-label="关闭日历">&#x00D7;</button>
+        </div>
+        <div class="calendar-toolbar">
+          <button id="calendarPrevMonth" type="button" class="calendar-toolbar__nav" aria-label="上个月">&#x2039;</button>
+          <span id="calendarMonthLabel" class="calendar-toolbar__label">-</span>
+          <button id="calendarNextMonth" type="button" class="calendar-toolbar__nav" aria-label="下个月">&#x203A;</button>
+          <button id="calendarToday" type="button" class="calendar-toolbar__today">今天</button>
+        </div>
+        <div class="calendar-weekdays" aria-hidden="true">
+          <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+        </div>
+        <div id="calendarGrid" class="calendar-grid"></div>
+        <div id="calendarDetail" class="calendar-detail hidden">
+          <div class="calendar-detail__head">
+            <strong id="calendarDetailDate">-</strong>
+            <button id="calendarDetailClose" type="button" aria-label="关闭日期详情">&#x00D7;</button>
+          </div>
+          <div id="calendarDetailStatus" class="calendar-detail__status"></div>
+          <div id="calendarDetailTasks" class="calendar-detail__tasks"></div>
+          <div class="calendar-detail__actions">
+            <button id="calendarEditPlan" type="button" class="calendar-detail__btn calendar-detail__btn--edit hidden">在计划模式中编辑</button>
+            <button id="calendarCreatePlan" type="button" class="calendar-detail__btn calendar-detail__btn--create hidden">为这一天制定计划</button>
+          </div>
+        </div>
       </section>
 
       <section id="statePanel" class="state-panel hidden" aria-label="Pet Framework 状态与记忆">

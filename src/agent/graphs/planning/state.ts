@@ -29,7 +29,27 @@ export type AgentActionType =
   | 'delete_task'
   | 'add_task'
   | 'request_confirmation'
-  | 'publish_plan';
+  | 'publish_plan'
+  // 日历扩展：取消未来计划
+  | 'cancel_plan'
+  // 日历扩展：只读查询工具（执行后返回结果给 agent_decide 继续判断）
+  | 'get_plan_by_date'
+  | 'list_plans_by_range'
+  | 'search_plans'
+  | 'get_calendar_month';
+
+/** 只读工具动作类型集合 */
+export const READONLY_ACTION_TYPES: ReadonlySet<AgentActionType> = new Set([
+  'get_plan_by_date',
+  'list_plans_by_range',
+  'search_plans',
+  'get_calendar_month'
+]);
+
+/** 判断动作是否为只读工具 */
+export function isReadonlyAction(type: AgentActionType): boolean {
+  return READONLY_ACTION_TYPES.has(type);
+}
 
 /** 模型输出的动作（经 Zod 校验后填充） */
 export interface AgentAction {
@@ -61,6 +81,30 @@ export interface AgentAction {
   };
   /** 对用户说的话（可选，缺失时由 agent-decide 节点生成默认消息） */
   message?: string;
+  /**
+   * 目标日期 YYYY-MM-DD（日历扩展）。
+   * 模型基于 TimeService 当前时间和时区输出，由确定性代码校验。
+   * 缺省时视为"今天"。
+   */
+  target_date?: string;
+  /** 用户原始日期表达（如"明天"、"下周三"、"7 月 20 日"），用于 trace 和追问 */
+  source_date_text?: string;
+  /**
+   * 明确指定要修改/取消的 planId（日历扩展）。
+   * 当用户通过日历入口或自然语言指定已有计划时使用。
+   * 缺省时使用当前 currentDraft 的 planId。
+   */
+  planId?: string;
+  /** search_plans 的搜索关键词 */
+  query?: string;
+  /** list_plans_by_range 的起始日期 YYYY-MM-DD */
+  startDate?: string;
+  /** list_plans_by_range 的结束日期 YYYY-MM-DD */
+  endDate?: string;
+  /** get_calendar_month 的年份 */
+  year?: number;
+  /** get_calendar_month 的月份（1-12） */
+  month?: number;
 }
 
 /** Graph 状态错误条目 */
@@ -254,6 +298,25 @@ export const PlanningState = Annotation.Root({
   /** Graph 迭代次数（独立于 modelCallCount，所有路径的通用循环上限） */
   graphIterationCount: Annotation<number>,
 
+  /** 日历扩展：规划线程 ID（与 target_date 或 planId 关联，用于 checkpoint 隔离） */
+  planningThreadId: Annotation<string>,
+  /** 日历扩展：当前规划的目标日期 YYYY-MM-DD */
+  targetDate: Annotation<string>,
+  /** 日历扩展：目标日期模式 */
+  targetDateMode: Annotation<'future_date' | 'today' | 'past_date' | ''>,
+  /** 日历扩展：从日历选中的日期 YYYY-MM-DD（UI 入口传入） */
+  selectedDate: Annotation<string>,
+  /** 日历扩展：选中日期对应的计划 */
+  selectedPlan: Annotation<PlanWithTasks | null>,
+  /** 日历扩展：今天的 active 计划 */
+  todayPlan: Annotation<PlanWithTasks | null>,
+  /** 日历扩展：只读工具返回的结果摘要（注入下次 agent_decide 上下文） */
+  toolResult: Annotation<string>,
+  /** 日历扩展：工具尝试次数（只读 + 写） */
+  toolAttemptCount: Annotation<number>,
+  /** 日历扩展：上次执行的是只读工具（用于路由回 agent_decide） */
+  lastToolWasReadonly: Annotation<boolean>,
+
   /** 最终响应 DTO */
   responseDTO: Annotation<PlanningResponseDTO | null>,
   /** 最终汇总的 Planning Trace（build_response 中设置） */
@@ -273,6 +336,9 @@ export function createInitialPlanningState(params: {
   existingMessages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
   existingDraft?: PlanDraft | null;
   traceId?: string;
+  planningThreadId?: string;
+  targetDate?: string;
+  selectedDate?: string;
 }): PlanningStateType {
   return {
     userId: params.userId,
@@ -319,6 +385,17 @@ export function createInitialPlanningState(params: {
     configuredModel: '',
     autoCorrectionCount: 0,
     graphIterationCount: 0,
+
+    // 日历扩展字段
+    planningThreadId: params.planningThreadId ?? '',
+    targetDate: params.targetDate ?? '',
+    targetDateMode: '',
+    selectedDate: params.selectedDate ?? '',
+    selectedPlan: null,
+    todayPlan: null,
+    toolResult: '',
+    toolAttemptCount: 0,
+    lastToolWasReadonly: false,
 
     responseDTO: null,
     planningTrace: null

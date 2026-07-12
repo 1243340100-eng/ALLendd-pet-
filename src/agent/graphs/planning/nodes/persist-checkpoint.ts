@@ -11,16 +11,22 @@ import { createLogger } from '../../../../infrastructure/logging/logger';
 
 const log = createLogger('PlanningGraph:persistCheckpoint');
 
-/** 修复 5：构建 scope_key */
-function buildScopeKey(userId: string, characterId: string): string {
-  return `${userId}:${characterId}`;
+/**
+ * 构建 scope_key，按 userId + characterId + planningThreadId 隔离 checkpoint。
+ * 日历扩展：planningThreadId 与 target_date 或 planId 关联，
+ * 确保同时编辑今天和未来日期的计划不会互相覆盖。
+ * 向后兼容：planningThreadId 为空时使用旧格式 userId:characterId。
+ */
+function buildScopeKey(userId: string, characterId: string, planningThreadId?: string): string {
+  const base = `${userId}:${characterId}`;
+  return planningThreadId ? `${base}:${planningThreadId}` : base;
 }
 
 /** 创建 persist_checkpoint 节点 */
 export function createPersistCheckpointNode() {
   return function persistCheckpoint(state: PlanningStateType): Partial<PlanningStateType> {
-    // 修复 5：scope_key 按 userId + characterId 隔离
-    const scopeKey = buildScopeKey(state.userId, state.characterId);
+    // 日历扩展：scope_key 按 userId + characterId + planningThreadId 隔离
+    const scopeKey = buildScopeKey(state.userId, state.characterId, state.planningThreadId || undefined);
 
     // 如果已发布，消费 checkpoint（不再需要恢复）
     if (state.published) {
@@ -51,7 +57,10 @@ export function createPersistCheckpointNode() {
           userConfirmed: state.userConfirmed,
           awaitingConfirmation: state.awaitingConfirmation,
           userId: state.userId,
-          characterId: state.characterId
+          characterId: state.characterId,
+          // 日历扩展：保存 planningThreadId 和 targetDate 用于恢复
+          planningThreadId: state.planningThreadId,
+          targetDate: state.targetDate
         });
         const reason = state.shouldAskUser
           ? 'ask_clarification'
@@ -72,7 +81,8 @@ export function createPersistCheckpointNode() {
             reason,
             scopeKey,
             messageCount: state.messages.length,
-            draftVersion: state.draftVersion
+            draftVersion: state.draftVersion,
+            planningThreadId: state.planningThreadId
           }
         });
         return { checkpointId };

@@ -6,10 +6,17 @@
  * 要求 7：所有写操作通过经过 Zod 校验的 Planning Tools。
  * 要求 8：publish_plan 必须要求明确用户确认；不能由模型擅自发布。
  * 要求 10：用户反馈优先 patch 当前草案，不默认删除全部任务重建。
+ *
+ * 日历扩展：
+ * - 只读工具（get_plan_by_date 等）通过 executeReadonlyTool 执行，返回 toolResult
+ * - 只读工具执行后设置 lastToolWasReadonly=true，由 graph 路由回 agent_decide
+ * - cancel_plan 不需要 currentDraft，可通过 action.planId 取消指定计划
  */
 import type { PlanningStateType } from '../state';
-import { executePlanningTool } from '../tools';
+import { isReadonlyAction } from '../state';
+import { executePlanningTool, executeReadonlyTool, validateTargetDate } from '../tools';
 import { planRepository } from '../../../../infrastructure/database/repositories/plan-repository';
+import type { PlanScope } from '../../../../infrastructure/database/repositories/plan-repository';
 import { createLogger } from '../../../../infrastructure/logging/logger';
 
 const log = createLogger('PlanningGraph:executeTool');
@@ -25,28 +32,83 @@ export function createExecuteToolNode() {
 
     // graphIterationCount 每次进入 execute_tool 时递增（独立于 modelCallCount 的通用循环上限）
     const graphIterationCount = state.graphIterationCount + 1;
+    const toolAttemptCount = state.toolAttemptCount + 1;
 
-    // 如果没有草案，但动作需要草案（patch/delete/add/publish），返回错误
+    // 日历扩展：只读工具走专用路径
+    if (isReadonlyAction(action.type)) {
+      const scope: PlanScope = { userId: state.userId, characterId: state.characterId };
+      const readonlyResult = executeReadonlyTool(action, scope);
+      const durationMs = Date.now() - phaseStartMs;
+
+      if (!readonlyResult.success) {
+        log.warn('readonly tool failed', {
+          traceId: state.traceId,
+          fields: { actionType: action.type, error: readonlyResult.error }
+        });
+        return {
+          graphIterationCount,
+          toolAttemptCount,
+          lastToolWasReadonly: true,
+          toolExecutionStatus: 'failed' as const,
+          lastToolError: readonlyResult.error ?? '只读工具执行失败',
+          lastAttemptedAction: action.type,
+          toolResult: '',
+          tracePhases: [...state.tracePhases, {
+            name: 'execute_tool',
+            success: false,
+            actionType: action.type,
+            toolName: action.type,
+            error: (readonlyResult.error ?? 'readonly tool failed').slice(0, 200),
+            durationMs
+          }]
+        };
+      }
+
+      log.info('readonly tool executed', {
+        traceId: state.traceId,
+        fields: {
+          actionType: action.type,
+          toolResultLength: readonlyResult.toolResult?.length ?? 0,
+          durationMs
+        }
+      });
+
+      return {
+        graphIterationCount,
+        toolAttemptCount,
+        lastToolWasReadonly: true,
+        toolExecutionStatus: 'succeeded' as const,
+        toolResult: readonlyResult.toolResult ?? '',
+        lastToolError: '',
+        lastAttemptedAction: '',
+        tracePhases: [...state.tracePhases, {
+          name: 'execute_tool',
+          success: true,
+          actionType: action.type,
+          toolName: action.type,
+          durationMs
+        }]
+      };
+    }
+
+    // 日历扩展：cancel_plan 不需要 currentDraft
     const requiresDraft = ['patch_tasks', 'delete_task', 'add_task', 'publish_plan'].includes(action.type);
     if (requiresDraft && !state.currentDraft) {
       const durationMs = Date.now() - phaseStartMs;
       return {
         graphIterationCount,
+        toolAttemptCount,
         errors: [...state.errors, {
           code: 'skill_input_invalid' as const,
           message: `动作 ${action.type} 需要已有草案`,
           node: 'execute_tool',
-          // 阻断 2：手动编辑失败不参与模型恢复，recovered=false
           recovered: state.isManualEdit ? false : true,
           occurredAt: new Date().toISOString()
         }],
-        // 修复 2：注入 lastToolError 和 lastAttemptedAction 到下次模型上下文
         lastToolError: `动作 ${action.type} 需要已有草案`,
         lastAttemptedAction: action.type,
-        // 阻断 1：明确覆盖工具执行状态
         toolExecutionStatus: 'failed' as const,
         responseText: '还没有计划草案，请先告诉我你今天的目标。',
-        // Trace: 记录 execute_tool 失败
         tracePhases: [...state.tracePhases, {
           name: 'execute_tool',
           success: false,
@@ -55,18 +117,18 @@ export function createExecuteToolNode() {
           error: `动作 ${action.type} 需要已有草案`,
           durationMs
         }],
-        // 自动修正次数 +1（非手动编辑时）
         autoCorrectionCount: state.isManualEdit ? state.autoCorrectionCount : state.autoCorrectionCount + 1
       };
     }
 
     // 获取或创建 plan ID 和 date
+    // 日历扩展：优先使用 targetDate（从 load_calendar_context 解析），其次 currentDraft.date，最后今天
     const today = state.timeContext
       ? state.timeContext.localDisplay.slice(0, 10).replace(/-/g, '-')
       : new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
-    const planId = state.currentDraft?.planId ?? `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const date = state.currentDraft?.date ?? today;
+    const planId = state.currentDraft?.planId ?? action.planId ?? `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const date = state.currentDraft?.date ?? (state.targetDate || today);
 
     // 从时间上下文获取当前小时和分钟（用于校验过去时间）
     const currentTimeHour = state.timeContext
@@ -76,6 +138,39 @@ export function createExecuteToolNode() {
       ? parseInt(state.timeContext.localDisplay.slice(14, 16), 10)
       : new Date().getMinutes();
 
+    // 日历扩展：对 create_draft 和 publish_plan 校验目标日期
+    if (action.type === 'create_draft' || action.type === 'publish_plan') {
+      const effectiveTargetDate = action.target_date || state.targetDate || today;
+      const dateValidation = validateTargetDate(effectiveTargetDate, today, { allowPast: false });
+      if (!dateValidation.valid) {
+        const durationMs = Date.now() - phaseStartMs;
+        return {
+          graphIterationCount,
+          toolAttemptCount,
+          errors: [...state.errors, {
+            code: 'skill_input_invalid' as const,
+            message: dateValidation.error!,
+            node: 'execute_tool',
+            recovered: state.isManualEdit ? false : true,
+            occurredAt: new Date().toISOString()
+          }],
+          lastToolError: dateValidation.error!,
+          lastAttemptedAction: action.type,
+          toolExecutionStatus: 'failed' as const,
+          responseText: dateValidation.error!,
+          tracePhases: [...state.tracePhases, {
+            name: 'execute_tool',
+            success: false,
+            actionType: action.type,
+            toolName: action.type,
+            error: dateValidation.error!.slice(0, 200),
+            durationMs
+          }],
+          autoCorrectionCount: state.isManualEdit ? state.autoCorrectionCount : state.autoCorrectionCount + 1
+        };
+      }
+    }
+
     // 执行 Planning Tool（Zod 校验已在 agent_decide 完成，此处执行写操作）
     const result = executePlanningTool(action, {
       planId,
@@ -83,7 +178,8 @@ export function createExecuteToolNode() {
       currentDraft: state.currentDraft,
       userConfirmed: state.userConfirmed,
       currentTimeHour,
-      currentTimeMinute
+      currentTimeMinute,
+      scope: { userId: state.userId, characterId: state.characterId }
     });
 
     if (!result.success) {
@@ -94,21 +190,18 @@ export function createExecuteToolNode() {
       });
       return {
         graphIterationCount,
+        toolAttemptCount,
         errors: [...state.errors, {
           code: 'skill_input_invalid' as const,
           message: result.error ?? 'Planning tool execution failed',
           node: 'execute_tool',
-          // 阻断 2：手动编辑失败不参与模型恢复，recovered=false
           recovered: state.isManualEdit ? false : true,
           occurredAt: new Date().toISOString()
         }],
-        // 修复 2：注入 lastToolError 和 lastAttemptedAction 到下次模型上下文
         lastToolError: result.error ?? 'Planning tool execution failed',
         lastAttemptedAction: action.type,
-        // 阻断 1：明确覆盖工具执行状态为 failed
         toolExecutionStatus: 'failed' as const,
         responseText: result.error ?? '操作失败，请重试。',
-        // Trace: 记录 execute_tool 失败
         tracePhases: [...state.tracePhases, {
           name: 'execute_tool',
           success: false,
@@ -117,13 +210,9 @@ export function createExecuteToolNode() {
           error: (result.error ?? 'execution failed').slice(0, 200),
           durationMs
         }],
-        // 自动修正次数 +1（非手动编辑时）
         autoCorrectionCount: state.isManualEdit ? state.autoCorrectionCount : state.autoCorrectionCount + 1
       };
     }
-
-    // 修复 2：成功后清理已恢复错误，防止错误信息残留到后续轮次
-    const lastError = state.errors[state.errors.length - 1];
 
     // 更新模型信息到数据库
     if (state.resolvedModel || state.responseModel) {
@@ -155,17 +244,15 @@ export function createExecuteToolNode() {
 
     return {
       graphIterationCount,
+      toolAttemptCount,
       currentDraft: result.draft ?? state.currentDraft,
       draftVersion: result.draft?.draftVersion ?? state.draftVersion,
       published: result.published ?? false,
-      // 修复 3：写入操作后进入 awaiting_confirmation
       awaitingConfirmation: shouldAwaitConfirmation ? true : state.awaitingConfirmation,
-      // 修复 2：成功后清理 lastToolError，防止错误信息残留
       lastToolError: '',
       lastAttemptedAction: '',
-      // 阻断 1：明确覆盖工具执行状态为 succeeded
+      lastToolWasReadonly: false,
       toolExecutionStatus: 'succeeded' as const,
-      // Trace: 记录 execute_tool 成功
       tracePhases: [...state.tracePhases, {
         name: 'execute_tool',
         success: true,

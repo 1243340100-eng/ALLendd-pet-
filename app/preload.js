@@ -58,6 +58,9 @@ contextBridge.exposeInMainWorld('petAPI', {
   // 气泡空间扩展：reminder bubble 显示时请求扩大窗口宽度，消失后恢复
   requestBubbleSpace: (extraWidth) => ipcRenderer.send('request-bubble-space', extraWidth),
   releaseBubbleSpace: () => ipcRenderer.send('release-bubble-space'),
+  // 聊天面板空间扩展：普通聊天模式时请求扩大窗口高度，关闭后恢复
+  requestChatSpace: (extraHeight) => ipcRenderer.send('request-chat-space', extraHeight),
+  releaseChatSpace: () => ipcRenderer.send('release-chat-space'),
   // 计划面板空间扩展：进入计划模式时请求扩大窗口宽度，退出后恢复
   requestPlanningSpace: (extraWidth) => ipcRenderer.send('request-planning-space', extraWidth),
   releasePlanningSpace: () => ipcRenderer.send('release-planning-space'),
@@ -72,5 +75,9 @@ contextBridge.exposeInMainWorld('petAPI', {
   getPlanningModelInfo: () => ipcRenderer.invoke('planning:get-model-info'),
   setPlanningModel: (modelId) => ipcRenderer.invoke('planning:set-model', modelId),
   getPlanningTrace: () => ipcRenderer.invoke('planning:get-trace'),
-  onPlanPublished: (callback) => ipcRenderer.on('planning:plan-published', (_event, plan) => callback(plan))
+  onPlanPublished: (callback) => ipcRenderer.on('planning:plan-published', (_event, plan) => callback(plan)),
+  // 日历扩展（V7）
+  getCalendarMonth: (year, month) => ipcRenderer.invoke('calendar:get-month', year, month),
+  getCalendarDate: (date) => ipcRenderer.invoke('calendar:get-date', date),
+  openPlanningWithDate: (targetDate, userInput) => ipcRenderer.invoke('calendar:open-planning', targetDate, userInput)
 });

@@ -8,7 +8,7 @@ import type { ModelMode, ErrorCode } from '../../../shared/constants';
 import type { PersonaConfig, ProactivePolicy, ScheduleItem, WeatherSnapshot } from '../../../shared/contracts/graph-state';
 
 /** 主动事件类型 */
-export type ProactiveType = 'reminder' | 'startup_digest' | 'daily_greeting';
+export type ProactiveType = 'reminder' | 'startup_digest' | 'daily_greeting' | 'daily_plan';
 
 /** 投递通道 */
 export type DeliveryChannel = 'pet_bubble' | 'system_notification' | 'deferred' | 'suppressed';

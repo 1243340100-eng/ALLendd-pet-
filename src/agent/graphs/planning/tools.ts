@@ -11,14 +11,19 @@
  */
 import { z } from 'zod';
 import { planRepository } from '../../../infrastructure/database/repositories/plan-repository';
+import type { PlanScope } from '../../../infrastructure/database/repositories/plan-repository';
 import { transaction } from '../../../infrastructure/database/connection';
 import type { PlanDraft, AgentAction, AgentActionType } from './state';
+import { isReadonlyAction } from './state';
 import { createLogger } from '../../../infrastructure/logging/logger';
 
 const log = createLogger('PlanningTools');
 
 /** HH:MM 时间格式校验 */
 const timeFormatSchema = z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, '时间格式必须为 HH:MM');
+
+/** YYYY-MM-DD 本地日期格式校验（仅格式，真实性由 TimeService.isValidLocalDate 校验） */
+const localDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式必须为 YYYY-MM-DD');
 
 /** 任务内容校验：非空，长度 1-200 */
 const taskContentSchema = z.string().min(1, '任务内容不能为空').max(200, '任务内容不能超过 200 字');
@@ -61,7 +66,13 @@ export const agentActionSchema = z.object({
     'delete_task',
     'add_task',
     'request_confirmation',
-    'publish_plan'
+    'publish_plan',
+    // 日历扩展
+    'cancel_plan',
+    'get_plan_by_date',
+    'list_plans_by_range',
+    'search_plans',
+    'get_calendar_month'
   ] as const satisfies readonly AgentActionType[]),
   clarificationQuestion: z.string().min(1).max(500).optional(),
   tasks: z.array(draftTaskSchema).min(1).max(10).optional(),
@@ -71,7 +82,16 @@ export const agentActionSchema = z.object({
   newTask: newTaskSchema.optional(),
   // 修复 v4-pro 兼容性：部分模型在复杂场景（如 patch_tasks）下可能不输出 message 字段。
   // 将 message 设为可选，缺失时由 agent-decide 节点根据动作类型生成默认消息。
-  message: z.string().min(1).max(1000).optional()
+  message: z.string().min(1).max(1000).optional(),
+  // 日历扩展字段
+  target_date: localDateSchema.optional(),
+  source_date_text: z.string().max(100).optional(),
+  planId: z.string().optional(),
+  query: z.string().min(1).max(200).optional(),
+  startDate: localDateSchema.optional(),
+  endDate: localDateSchema.optional(),
+  year: z.number().int().min(2000).max(2100).optional(),
+  month: z.number().int().min(1).max(12).optional()
 }).refine(
   (data) => {
     // 根据类型校验必填字段
@@ -88,7 +108,16 @@ export const agentActionSchema = z.object({
         return !!data.newTask;
       case 'request_confirmation':
       case 'publish_plan':
+      case 'cancel_plan':
         return true;
+      case 'get_plan_by_date':
+        return !!data.target_date;
+      case 'list_plans_by_range':
+        return !!data.startDate && !!data.endDate;
+      case 'search_plans':
+        return !!data.query;
+      case 'get_calendar_month':
+        return typeof data.year === 'number' && typeof data.month === 'number';
       default:
         return false;
     }
@@ -110,6 +139,8 @@ export function validateAgentAction(parsed: unknown): { valid: boolean; action?:
 /**
  * 校验任务时间不早于当前时间。
  * 要求 8：当前时间之后才允许安排未开始任务。
+ *
+ * 日历扩展：仅用于 today 模式。future_date 模式不调用此函数。
  */
 export function validateTaskTimesNotPast(
   tasks: Array<{ start_time: string; end_time: string }>,
@@ -132,22 +163,96 @@ export function validateTaskTimesNotPast(
 }
 
 /**
- * 统一校验计划草案。
- * 校验项：
- * - HH:MM 时间格式
- * - start < end
- * - 过去时间
- * - 任务重叠
- * - 空任务
- * - 重复任务
- *
- * 修复 3：create/patch/add/delete/manual edit/publish 后全部校验。
- * publish 前必须重新校验整个计划。
+ * 校验 YYYY-MM-DD 是否为真实存在的日期（覆盖闰年、跨月、跨年）。
+ * 不依赖 TimeService 实例，便于纯函数测试。
  */
-export function validatePlanDraft(
+export function isValidLocalDate(dateStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (m < 1 || m > 12) return false;
+  if (d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/** 比较两个 YYYY-MM-DD 日期字符串：-1 / 0 / 1 */
+function compareLocalDate(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/** 目标日期分类 */
+export type TargetDateMode = 'future_date' | 'today' | 'past_date';
+
+/** 计划草案校验模式 */
+export type PlanValidationMode = 'future_date' | 'today' | 'past_date' | 'display_or_activation';
+
+/**
+ * 校验目标日期。
+ *
+ * 规则（对应规格第三节）：
+ * 1. target_date 必须是合法 ISO 本地日期 YYYY-MM-DD；
+ * 2. 不允许模型伪造当前日期（todayDate 由 TimeService 提供）；
+ * 3. 创建过去日期计划必须拒绝（allowPast=false 时）；
+ * 4. 查看过去计划允许（allowPast=true 时）；
+ * 5. 不得把 UTC 日期截断当作本地日期（校验格式，不使用 toISOString().slice）。
+ *
+ * 返回 mode 用于后续 validatePlanDraftByMode 选择校验模式。
+ */
+export function validateTargetDate(
+  targetDate: string | undefined,
+  todayDate: string,
+  options?: { allowPast?: boolean }
+): { valid: boolean; mode?: TargetDateMode; error?: string } {
+  if (!targetDate || typeof targetDate !== 'string') {
+    return { valid: false, error: '缺少目标日期' };
+  }
+  if (!isValidLocalDate(targetDate)) {
+    return { valid: false, error: `目标日期 ${targetDate} 不是合法的 YYYY-MM-DD 日期` };
+  }
+  const cmp = compareLocalDate(targetDate, todayDate);
+  let mode: TargetDateMode;
+  if (cmp > 0) mode = 'future_date';
+  else if (cmp === 0) mode = 'today';
+  else mode = 'past_date';
+
+  if (mode === 'past_date' && !options?.allowPast) {
+    return {
+      valid: false,
+      mode,
+      error: `不能为过去日期 ${targetDate} 创建或修改计划（今天是 ${todayDate}）。查看过去计划请使用日历入口。`
+    };
+  }
+  return { valid: true, mode };
+}
+
+/**
+ * 按模式校验计划草案。
+ *
+ * future_date：目标日期晚于今天
+ *   - 08:00 即使早于当前时刻也合法
+ *   - 校验 HH:MM、start < end、重复、重叠
+ *   - 不应用"早于当前时间"规则
+ *
+ * today：目标日期等于今天
+ *   - 新增任务和被修改任务不能安排到当前时间之前
+ *   - 已经开始或已经完成的旧任务不能导致整个计划无法读取（display 模式负责）
+ *   - 发布时需要给出合理的过期任务处理结果
+ *
+ * past_date：
+ *   - 允许查看（本函数不拒绝）
+ *   - 创建和修改由 validateTargetDate 在上层拒绝
+ *
+ * display_or_activation：每日激活和显示计划时
+ *   - 不能因为应用启动较晚、部分任务时间已过去就拒绝整个计划
+ *   - 过去但未完成的任务保留并明确显示
+ *   - 不允许静默删除
+ */
+export function validatePlanDraftByMode(
   tasks: Array<{ id?: string; content?: string; start_time?: string | null; end_time?: string | null; order_index?: number }>,
-  currentTimeHour?: number,
-  currentTimeMinute?: number
+  mode: PlanValidationMode,
+  options?: { currentTimeHour?: number; currentTimeMinute?: number }
 ): { valid: boolean; error?: string } {
   // 1. 空任务检查
   if (!tasks || tasks.length === 0) {
@@ -190,9 +295,12 @@ export function validatePlanDraft(
       return { valid: false, error: `任务 ${i + 1} 开始时间 ${startTime} 必须早于结束时间 ${endTime}` };
     }
 
-    // 5. 过去时间校验（如果提供了当前时间）
-    if (currentTimeHour !== undefined && currentTimeMinute !== undefined) {
-      const currentMinutes = currentTimeHour * 60 + currentTimeMinute;
+    // 5. 过去时间校验：仅 today 模式且提供了当前时间时应用
+    //    future_date / past_date / display_or_activation 模式跳过此校验
+    if (mode === 'today' &&
+        options?.currentTimeHour !== undefined &&
+        options?.currentTimeMinute !== undefined) {
+      const currentMinutes = options.currentTimeHour * 60 + options.currentTimeMinute;
       if (startMin < currentMinutes) {
         return { valid: false, error: `任务 ${i + 1} 的开始时间 ${startTime} 早于当前时间，不允许安排过去时间` };
       }
@@ -224,7 +332,6 @@ export function validatePlanDraft(
     for (let j = i + 1; j < normalized.length; j++) {
       const a = normalized[i];
       const b = normalized[j];
-      // 重叠条件：a.start < b.end && b.start < a.end
       if (a.startMin < b.endMin && b.startMin < a.endMin) {
         return {
           valid: false,
@@ -235,6 +342,23 @@ export function validatePlanDraft(
   }
 
   return { valid: true };
+}
+
+/**
+ * 统一校验计划草案（向后兼容包装器）。
+ *
+ * 修复 3：create/patch/add/delete/manual edit/publish 后全部校验。
+ * publish 前必须重新校验整个计划。
+ *
+ * 日历扩展：此函数保持原有签名，内部按 'today' 模式校验。
+ * 跨日期计划请使用 validatePlanDraftByMode。
+ */
+export function validatePlanDraft(
+  tasks: Array<{ id?: string; content?: string; start_time?: string | null; end_time?: string | null; order_index?: number }>,
+  currentTimeHour?: number,
+  currentTimeMinute?: number
+): { valid: boolean; error?: string } {
+  return validatePlanDraftByMode(tasks, 'today', { currentTimeHour, currentTimeMinute });
 }
 
 /**
@@ -283,9 +407,11 @@ export function executePlanningTool(
     userConfirmed: boolean;
     currentTimeHour: number;
     currentTimeMinute: number;
+    /** V7: scope 隔离 — create_draft 写入 plans 时使用 */
+    scope?: PlanScope;
   }
 ): { success: boolean; draft?: PlanDraft; error?: string; published?: boolean } {
-  const { planId, date, currentDraft, userConfirmed, currentTimeHour, currentTimeMinute } = context;
+  const { planId, date, currentDraft, userConfirmed, currentTimeHour, currentTimeMinute, scope } = context;
 
   switch (action.type) {
     case 'ask_clarification': {
@@ -308,7 +434,12 @@ export function executePlanningTool(
             // 已有草案：删除旧任务，插入新任务
             planRepository.deleteTasksByPlanId(planId);
           } else {
-            planRepository.insert({ id: planId, date, status: 'draft' });
+            planRepository.insert({
+              id: planId, date, status: 'draft',
+              user_id: scope?.userId ?? '',
+              character_id: scope?.characterId ?? '',
+              timezone: 'Asia/Shanghai'
+            });
           }
 
           const tasks = action.tasks!.map((t, i) => ({
@@ -493,7 +624,152 @@ export function executePlanningTool(
       }
     }
 
+    case 'cancel_plan': {
+      // 日历扩展：取消未来计划（draft/scheduled → cancelled）
+      // 可通过 action.planId 指定要取消的计划，或使用当前 currentDraft 的 planId
+      const targetPlanId = action.planId || planId;
+      if (!targetPlanId) {
+        return { success: false, error: '取消计划需要指定 planId' };
+      }
+      try {
+        const ok = planRepository.cancelPlan(targetPlanId);
+        if (!ok) {
+          return { success: false, error: '取消计划失败，可能状态不允许（仅 draft/scheduled 可取消）或计划不存在' };
+        }
+        log.info('planning tool: cancel_plan', { fields: { planId: targetPlanId } });
+        // 取消后清除当前草案（如果是取消当前草案）
+        const clearedDraft = (currentDraft && currentDraft.planId === targetPlanId) ? undefined : currentDraft ?? undefined;
+        return { success: true, draft: clearedDraft };
+      } catch (error) {
+        return { success: false, error: (error as Error)?.message ?? 'cancel_plan failed' };
+      }
+    }
+
+    case 'get_plan_by_date':
+    case 'list_plans_by_range':
+    case 'search_plans':
+    case 'get_calendar_month': {
+      // 只读工具由 executeReadonlyTool 处理，不应到达此处
+      log.warn('planning tool: readonly tool must be executed via executeReadonlyTool', { fields: { actionType: action.type } });
+      return {
+        success: false,
+        error: `只读工具 ${action.type} 需要通过 executeReadonlyTool 执行`
+      };
+    }
+
     default:
       return { success: false, error: `未知动作类型: ${(action as AgentAction).type}` };
+  }
+}
+
+/**
+ * 执行只读工具（日历扩展）。
+ *
+ * 只读工具执行后，把 toolResult 返回给 agent_decide，让模型根据查询结果继续判断。
+ * 例如：用户"把我之前有健身的计划推迟一小时"
+ *   1. 模型第一次调用 search_plans(query="健身")
+ *   2. 工具返回候选计划和日期
+ *   3. 模型第二次调用 patch_tasks(planId=..., patches=...)
+ *
+ * 返回 toolResult 为结构化文本摘要，可注入下次模型上下文。
+ */
+export function executeReadonlyTool(
+  action: AgentAction,
+  scope: PlanScope
+): { success: boolean; toolResult?: string; error?: string } {
+  if (!isReadonlyAction(action.type)) {
+    return { success: false, error: `${action.type} 不是只读工具` };
+  }
+
+  try {
+    switch (action.type) {
+      case 'get_plan_by_date': {
+        const date = action.target_date!;
+        const plan = planRepository.getPlanByDate(scope, date);
+        if (!plan) {
+          return {
+            success: true,
+            toolResult: `日期 ${date} 没有计划。`
+          };
+        }
+        const taskSummary = plan.tasks.map((t, i) =>
+          `${i + 1}. ${t.start_time ?? '??:??'}-${t.end_time ?? '??:??'} ${t.content}${t.completed ? '（已完成）' : ''}`
+        ).join('\n');
+        return {
+          success: true,
+          toolResult: `日期 ${date} 的计划（ID: ${plan.id}，状态: ${plan.status}）：\n${taskSummary}`
+        };
+      }
+
+      case 'list_plans_by_range': {
+        const from = action.startDate!;
+        const to = action.endDate!;
+        const plans = planRepository.listPlansByRange(scope, from, to);
+        if (plans.length === 0) {
+          return {
+            success: true,
+            toolResult: `日期范围 ${from} 至 ${to} 没有计划。`
+          };
+        }
+        const summary = plans.map(p => {
+          const taskCount = p.tasks.length;
+          const completedCount = p.tasks.filter(t => t.completed).length;
+          return `${p.date} [${p.status}] ${taskCount} 个任务（${completedCount} 已完成）ID: ${p.id}`;
+        }).join('\n');
+        return {
+          success: true,
+          toolResult: `日期范围 ${from} 至 ${to} 的计划列表：\n${summary}`
+        };
+      }
+
+      case 'search_plans': {
+        const query = action.query!;
+        const plans = planRepository.searchPlans(scope, query);
+        if (plans.length === 0) {
+          return {
+            success: true,
+            toolResult: `搜索"${query}"未找到匹配的计划。`
+          };
+        }
+        const summary = plans.map(p => {
+          const matchingTasks = p.tasks.filter(t => t.content.includes(query));
+          const taskDetail = matchingTasks.length > 0
+            ? matchingTasks.map(t => `  - ${t.start_time ?? '??:??'} ${t.content}`).join('\n')
+            : p.tasks.map(t => `  - ${t.start_time ?? '??.??'} ${t.content}`).join('\n');
+          return `${p.date} [${p.status}] ID: ${p.id}\n${taskDetail}`;
+        }).join('\n');
+        return {
+          success: true,
+          toolResult: `搜索"${query}"找到 ${plans.length} 个计划：\n${summary}`
+        };
+      }
+
+      case 'get_calendar_month': {
+        const year = action.year!;
+        const month = action.month!;
+        const monthPlans = planRepository.getPlansForMonth(scope, year, month);
+        if (monthPlans.length === 0) {
+          return {
+            success: true,
+            toolResult: `${year}年${month}月没有计划。`
+          };
+        }
+        const summary = monthPlans.map(p =>
+          `${p.date} [${p.status}] ${p.taskCount} 个任务（${p.completedCount} 已完成）`
+        ).join('\n');
+        return {
+          success: true,
+          toolResult: `${year}年${month}月的计划概览：\n${summary}`
+        };
+      }
+
+      default:
+        return { success: false, error: `未知只读工具: ${action.type}` };
+    }
+  } catch (error) {
+    log.warn('readonly tool execution failed', {
+      fields: { actionType: action.type, error: (error as Error)?.message }
+    });
+    return { success: false, error: (error as Error)?.message ?? '只读工具执行失败' };
   }
 }

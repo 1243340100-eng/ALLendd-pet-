@@ -1,0 +1,541 @@
+请在 roxy-electron-pet-framework 中开发“跨日期日历计划”功能。
+
+这是框架通用能力，不是 Roxy 正式版专属修改。本阶段只修改：
+
+D:\Documents\展示项目内容\roxy-electron-pet-framework
+
+不要修改 roxy-electron-pet 或其他桌宠项目。
+
+开始前：
+
+1. 阅读工作区 AGENTS.md。
+2. 阅读 PROJECT_STRUCTURE.md。
+3. 阅读 CONVERSATION_HARNESS_HANDOFF.md 中的 PlanningGraph 部分。
+4. 执行 git status --short，保留用户现有改动。
+5. 为当前已经通过测试的 PlanningGraph 建立 Git 提交点，确保可以回退。
+6. 不得读取、复制、提交用户 API Key、记忆、聊天记录或 Electron userData。
+
+# 一、功能目标
+
+用户可以在计划模式中通过自然语言创建未来日期的计划，例如：
+
+- 明天下午帮我安排写报告和健身
+- 下周三上午准备会议，下午修改代码
+- 7 月 20 日安排三个任务
+- 把下周三的代码审查推迟到下午四点
+- 我之前安排健身的是哪一天？
+- 把那个有“论文大纲”的计划增加一个资料整理任务
+
+确认后的未来计划不会提前显示在桌面计划气泡中。
+
+到达对应日期后：
+
+1. 应用启动时或跨日后自动检查当天计划；
+2. 当天计划自动进入可展示状态；
+3. 在桌宠现有计划/提醒任务条中显示；
+4. 用户可以勾选任务完成；
+5. 日历入口能够查看任意日期的计划；
+6. 自动激活和提示必须幂等，不能重复显示或重复写入。
+
+# 二、架构要求
+
+## 2.1 不新增独立 CalendarGraph
+
+本阶段日历属于 PlanningGraph 的跨日期能力。
+
+扩展现有流程为：
+
+START
+→ load_planning_context
+→ load_calendar_context
+→ agent_decide
+→ validate_plan_target
+→ execute_tool
+→ build_response
+→ persist_checkpoint
+→ END
+
+允许根据实际代码合并相邻节点，但职责必须清晰。
+
+## 2.2 增加真正的 Agent 工具循环
+
+增加只读工具：
+
+- get_plan_by_date
+- list_plans_by_range
+- search_plans
+- get_calendar_month
+
+增加写工具或扩展现有工具：
+
+- create_draft，必须支持 target_date
+- patch_tasks，必须明确 planId 或 target_date
+- add_task
+- delete_task
+- request_confirmation
+- publish_plan
+- cancel_plan（如现有功能没有放弃未来计划的正式能力）
+
+只读工具执行后，应把 toolResult 返回给 agent_decide，让模型根据查询结果继续判断。
+
+例如：
+
+用户：“把我之前有健身的那个计划推迟一小时”
+
+模型第一次调用：
+
+search_plans(query="健身")
+
+工具返回候选计划和日期。
+
+模型第二次调用：
+
+patch_tasks(planId=..., patches=...)
+
+不得用关键词脚本直接替代模型理解。
+
+工具循环必须有独立的：
+
+- graphIterationCount
+- toolAttemptCount
+- modelCallCount
+
+所有路径都有明确上限，不得重新引入 recursion limit 问题。
+
+## 2.3 日期处理
+
+AgentAction 增加明确字段：
+
+- target_date：YYYY-MM-DD
+- source_date_text：用户原始日期表达，可选
+- planId：修改已有计划时使用
+- message
+
+模型负责理解“明天、后天、下周三、7 月 20 日”等自然语言，并基于 TimeService 提供的当前时间和时区输出 target_date。
+
+确定性代码负责验证：
+
+1. target_date 必须是合法 ISO 本地日期；
+2. 不允许模型伪造当前日期；
+3. “月底、有空时、以后某天”等无法确定具体日期的表达必须追问；
+4. 不得把 UTC 日期截断当作本地日期；
+5. 创建过去日期计划必须拒绝；
+6. 查看过去计划允许；
+7. 修改过去计划默认拒绝并解释；
+8. 所有日期计算使用 TimeService 和可注入 Clock。
+
+禁止只用关键词监听器或正则作为核心日期理解逻辑。正则只能做格式校验和安全兜底。
+
+# 三、修复当前跨日期必然出现的问题
+
+当前 validatePlanDraft 使用当天当前时间校验 HH:MM，这不能直接用于未来计划。
+
+必须拆分校验模式：
+
+## future_date
+
+目标日期晚于今天：
+
+- 08:00 即使早于当前时刻也合法；
+- 校验 HH:MM、start < end、重复、重叠；
+- 不应用“早于当前时间”规则。
+
+## today
+
+目标日期等于今天：
+
+- 新增任务和被修改任务不能安排到当前时间之前；
+- 已经开始或已经完成的旧任务不能导致整个计划无法读取；
+- 发布时需要给出合理的过期任务处理结果。
+
+## display_or_activation
+
+每日激活和显示计划时：
+
+- 不能因为应用启动较晚、部分任务时间已过去就拒绝整个计划；
+- 过去但未完成的任务可标记为 missed/overdue，或保留并明确显示；
+- 不允许静默删除。
+
+## past_date
+
+- 允许查看；
+- 默认禁止新建和修改；
+- 如果未来要支持补录，另行设计，本阶段不做。
+
+必须覆盖 23:59、00:00、跨月、跨年和闰年。
+
+# 四、数据库设计
+
+不要新增一套与 plans 重复的 calendar_events 主数据。
+
+继续以：
+
+- plans
+- plan_tasks
+
+作为唯一计划主数据源。
+
+通过新迁移版本幂等扩展 plans，至少考虑：
+
+- user_id
+- character_id
+- date
+- status
+- timezone
+- activated_at
+- completed_at
+- cancelled_at
+- draft_version
+- lock_version
+- resolved_model
+- response_model
+- user_confirmed
+
+计划状态建议扩展为：
+
+- draft
+- scheduled：已确认的未来计划
+- active：今天正在展示
+- completed
+- cancelled
+- expired（如果决定显式保留过期状态）
+
+状态规则：
+
+- 今天的计划确认后可进入 active；
+- 未来计划确认后进入 scheduled；
+- 到达日期后由每日激活服务转换为 active；
+- 全部任务完成后进入 completed；
+- 不得直接删除有历史意义的已发布计划；
+- 草案可以放弃；
+- 同一 user_id + character_id + date 同时只能有一个 live plan；
+- live plan 指 draft/scheduled/active；
+- 数据库约束和 repository 业务校验都要存在。
+
+迁移要求：
+
+1. 不删除现有 plans 和 plan_tasks。
+2. 不丢失现有计划。
+3. 迁移前使用现有数据库备份机制。
+4. 重复运行迁移必须安全。
+5. 旧数据需要明确的 user/character/date/status 回填策略。
+6. unique index 建立前检查并处理旧数据冲突。
+7. 所有 repository 查询必须按 userId、characterId 和日期隔离。
+8. 不得继续使用全局 getDraftPlan()/getActivePlan() 查询未来日历数据。
+
+增加或替换为：
+
+- getPlanByDate(scope, date)
+- getDraftPlanByDate(scope, date)
+- getTodayActivePlan(scope, localDate)
+- listPlansByRange(scope, from, to)
+- searchPlans(scope, query, range?)
+- getPlansForMonth(scope, year, month)
+
+# 五、计划记忆设计
+
+用户要求“计划及日期进入记忆”，但不得把每个任务复制成不受同步控制的普通 longTerm memory。
+
+实现 PlanMemoryRetriever：
+
+- plans/plan_tasks 是唯一事实来源；
+- 可按日期检索；
+- 可按任务内容检索；
+- 可按日期范围检索；
+- 返回给模型的是有限、结构化摘要；
+- 不把全部历史计划塞进 Prompt；
+- 结果包含 planId、date、status、任务摘要；
+- 修改计划后立即能够通过检索读取新内容；
+- 删除或取消计划后不能继续返回过期副本。
+
+如果为了全文搜索建立索引，它必须是可重建的派生索引，并以 planId/draftVersion 保持同步，不能成为第二份主数据。
+
+PlanningGraph 的上下文至少包含：
+
+- todayPlan
+- selectedDate
+- selectedPlan
+- planSearchResults
+- boundedUserMemories
+- timeContext
+
+用户稳定偏好仍从现有 MemoryStore 获取，例如：
+
+“我下午容易疲劳”
+“我喜欢每 50 分钟休息”
+
+计划事实从 PlanMemoryRetriever 获取，例如：
+
+“7 月 20 日有代码审查”
+“之前有健身的计划在 7 月 18 日”
+
+不得把计划事实和稳定用户画像混为一类。
+
+# 六、Checkpoint 隔离
+
+当前 PlanningGraph checkpoint 不能只按 userId + characterId 隔离，否则同时编辑今天和未来日期的计划会互相覆盖。
+
+调整 scope：
+
+userId + characterId + planningThreadId
+
+planningThreadId 可以与 target_date 或 planId 关联。
+
+要求：
+
+- 打开 7 月 20 日计划后，不能覆盖 7 月 21 日草案；
+- 重启后能够恢复对应日期的计划对话；
+- 切换日期时加载正确 checkpoint；
+- 发布或取消计划后正确消费对应 checkpoint；
+- 不得消费其他日期的 checkpoint。
+
+# 七、每日自动激活
+
+每日计划激活不是 PlanningGraph 的常驻时间循环。
+
+新增 CalendarActivationService，或在现有 SchedulerService 中增加明确职责：
+
+1. 应用启动后检查本地今天日期；
+2. 应用运行跨日时再次检查；
+3. 查询今天 scheduled 计划；
+4. 原子地转换为 active；
+5. 通过 event_outbox 写入幂等事件；
+6. 触发 ProactiveGraph 的 daily_plan 事件；
+7. 通知 renderer 刷新计划气泡；
+8. 同一 planId + date 只能激活和通知一次。
+
+增加 ProactiveType：
+
+daily_plan
+
+ProactiveGraph 可以生成符合角色人格的简短当天计划提示，但：
+
+- 计划任务数据必须来自数据库；
+- 模型不能修改计划；
+- 模型失败时仍必须展示确定性的当天计划；
+- 不得因为 AI API 不可用而丢失当天计划；
+- 不得为每个任务复制创建普通 reminder，除非用户明确单独设置提醒。
+
+应用在当天中途启动时也必须显示当天计划。
+
+未来计划不能提前出现在桌面常驻计划条。
+
+# 八、日历 UI
+
+在现有界面增加明确的日历入口按钮。
+
+日历面板至少包含：
+
+- 月视图；
+- 上月、下月、回到今天；
+- 当前选中日期；
+- 有计划日期的状态标记；
+- 每日任务数量或完成进度；
+- scheduled/active/completed 状态；
+- 点击日期查看任务详情；
+- “在计划模式中编辑”按钮；
+- 空日期提供“为这一天制定计划”入口。
+
+UI 约束：
+
+1. renderer 只负责展示和交互，不直接操作 SQLite。
+2. 所有输入经过 preload 暴露的受控 IPC。
+3. IPC 使用 Zod 校验。
+4. 月视图只查询当前月份或有限范围，不能一次加载全部历史。
+5. 切换月份不能调用模型。
+6. 查看计划不能调用模型。
+7. 只有自然语言制定或修改计划时调用 planningModel。
+8. 手动勾选完成状态不调用模型。
+9. 修改后日历、计划详情和桌面气泡应同步刷新。
+10. 透明窗口需要正确扩展可交互区域。
+11. 按钮和面板必须设置 -webkit-app-region: no-drag。
+12. 不得破坏桌宠拖动、聊天、State 面板和现有计划气泡。
+
+建议 IPC：
+
+- calendar:get-month
+- calendar:get-date
+- calendar:open-planning
+- planning:start，增加可选 targetDate/planningThreadId
+- planning:submit-message
+- planning:confirm
+- planning:toggle-task
+
+所有 IPC 必须有 user/character scope，不信任 renderer 直接传入数据库主键。
+
+# 九、并发与事务
+
+以下操作必须原子化：
+
+- 创建计划及任务；
+- 修改多项任务；
+- 发布未来计划；
+- scheduled → active；
+- 完成最后一个任务并把计划设为 completed；
+- 取消计划；
+- 更新派生检索索引；
+- event_outbox 写入。
+
+继续使用 draft_version 和 lock_version。
+
+日历面板与计划模式同时修改同一计划时：
+
+- 检测版本冲突；
+- 不允许静默覆盖；
+- 返回最新计划；
+- 提示用户重新确认。
+
+# 十、必须新增的测试
+
+至少覆盖：
+
+1. “明天上午八点”在今天下午仍可创建。
+2. 今天过去时间仍被拒绝。
+3. “下周三”基于 TimeService 得到正确日期。
+4. 跨月日期。
+5. 跨年日期。
+6. 闰年 2 月 29 日。
+7. 不明确日期会追问。
+8. 查看过去计划允许，修改过去计划拒绝。
+9. 按日期创建未来草案。
+10. 确认未来计划后状态为 scheduled。
+11. 未来计划不会提前显示在计划气泡。
+12. 到达日期后 scheduled 原子变 active。
+13. 应用当天中途启动能够补激活。
+14. 重复启动不会重复激活或重复通知。
+15. 23:59 → 00:00 跨日。
+16. 按日期修改指定计划。
+17. 按任务内容搜索计划。
+18. 搜索结果能被模型继续用于 patch。
+19. 修改后 PlanMemoryRetriever 返回新内容。
+20. 不返回取消计划的过期副本。
+21. 两个日期的 checkpoint 不互相覆盖。
+22. user/character 数据隔离。
+23. 月历 IPC 只返回指定月份。
+24. 切换月份不调用模型。
+25. 查看日期不调用模型。
+26. 手动勾选完成不调用模型。
+27. 最后任务完成后计划进入 completed。
+28. API 失败不影响当天计划展示。
+29. 模型输出非法 target_date 被拒绝。
+30. 工具循环不会超过限制。
+31. migration 重复执行安全。
+32. 旧数据库升级后现有计划仍存在。
+33. 打包版 app.asar 包含新节点、服务、迁移和 UI。
+34. 真实 PetFramework.exe 启动后 architecture-status 为 langgraph_ready。
+
+测试必须使用 FixedClock，不依赖真实系统时间。
+
+# 十一、真实模型人工验收
+
+自动测试完成后，再使用真实 planningModel 执行：
+
+- 帮我安排明天的工作
+- 下周三上午写大纲，下午开会
+- 这个月底帮我安排一下
+- 把下周三第二个任务推迟一小时
+- 我之前哪一天安排了健身？
+- 把有论文大纲的那个计划增加资料整理
+- 取消 7 月 20 日的计划
+- 查看昨天的计划
+- 把昨天的任务改到今天
+- 今天计划还有什么没完成？
+
+记录：
+
+- testType=real；
+- configuredModel；
+- resolvedModel；
+- responseModel；
+- 用户输入；
+- 模型输出；
+- 工具调用顺序；
+- 模型调用次数；
+- target_date；
+- planId；
+- traceId；
+- 最终数据库状态；
+- 是否通过；
+- 人工评价；
+- 失败原因。
+
+Mock 测试和真实模型验收必须分开报告。
+
+# 十二、构建与交付要求
+
+完成后执行：
+
+npm.cmd run typecheck
+npm.cmd run build:ts
+npx.cmd tsx tests/unit/planning-graph.test.ts
+npx.cmd tsx tests/unit/calendar-planning.test.ts
+npx.cmd tsx tests/unit/calendar-activation.test.ts
+npx.cmd tsx tests/unit/database.test.ts
+npm.cmd run pack
+npm.cmd run test:packaged-new-arch
+
+同时运行：
+
+node --check app/main.js
+node --check app/preload.js
+node --check app/renderer.js
+git diff --check
+
+构建后确认：
+
+- release/win-unpacked/PetFramework.exe 修改时间已更新；
+- resources/app.asar 修改时间已更新；
+- app.asar 包含新迁移、日历服务、PlanningGraph 扩展和 UI；
+- 不生成 zip；
+- 不修改或复制用户 userData。
+
+# 十三、文档与复查报告
+
+框架发生通用能力变化，必须检查并更新：
+
+- D:\Documents\展示项目内容\AGENTS.md
+- PROJECT_STRUCTURE.md
+- CUSTOMIZE_GUIDE.md
+- CONVERSATION_HARNESS_HANDOFF.md
+- CHARACTER_PACKAGING_GUIDE.md
+- PERSONALITY_PROFILE_TEMPLATE_GUIDE.md
+
+新增：
+
+CALENDAR_PLANNING_IMPLEMENTATION_REPORT.md
+
+报告必须包含：
+
+1. 实际修改文件清单；
+2. 最终架构图；
+3. 新增 LangGraph 节点和工具；
+4. 数据库迁移版本与回滚/兼容策略；
+5. plans 状态机；
+6. 日期及时区规则；
+7. PlanMemoryRetriever 设计；
+8. 每日激活幂等机制；
+9. IPC 清单；
+10. 所有测试的真实 PASS/FAIL 数量；
+11. Mock 与真实模型验收分别记录；
+12. 已知限制；
+13. EXE 和 app.asar 的修改时间；
+14. 唯一正确测试入口；
+15. git status --short；
+16. 当前提交 ID。
+
+不得只回复“已经完成”。必须提供可复核证据、失败日志摘要和仍未完成的项目。
+
+# 十四、阶段边界
+
+本阶段不实现：
+
+- Google Calendar、Outlook 或飞书日历同步；
+- 多人共享日历；
+- 无限重复日程；
+- 复杂 RRULE；
+- 云端同步；
+- 自动替用户删除历史计划；
+- 根据普通聊天偷偷创建计划；
+- 未经确认自动发布 AI 草案。
+
+先完成本地、单用户、跨日期计划和每日激活的可靠闭环。

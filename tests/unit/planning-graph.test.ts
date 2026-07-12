@@ -301,7 +301,7 @@ async function testPatchAfternoonConstraint(): Promise<void> {
     const planId = `plan_${Date.now()}_test3`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp3 = futureTimePairs(3);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't1', plan_id: planId, content: '上午工作', start_time: tp3[0].start_time, end_time: tp3[0].end_time, completed: 0, order_index: 0 },
       { id: 't2', plan_id: planId, content: '下午任务A', start_time: tp3[1].start_time, end_time: tp3[1].end_time, completed: 0, order_index: 1 },
@@ -357,7 +357,7 @@ async function testPatchSpecificTaskOnly(): Promise<void> {
     const planId = `plan_${Date.now()}_test4`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp4 = futureTimePairs(4);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't1', plan_id: planId, content: '第一项', start_time: tp4[0].start_time, end_time: tp4[0].end_time, completed: 0, order_index: 0 },
       { id: 't2', plan_id: planId, content: '第二项', start_time: tp4[1].start_time, end_time: tp4[1].end_time, completed: 0, order_index: 1 },
@@ -411,7 +411,7 @@ async function testDeleteSpecificTaskOnly(): Promise<void> {
 
     const planId = `plan_${Date.now()}_test5`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't1', plan_id: planId, content: '写文档', start_time: '09:00', end_time: '10:00', completed: 0, order_index: 0 },
       { id: 't2', plan_id: planId, content: '代码审查', start_time: '10:00', end_time: '11:00', completed: 0, order_index: 1 },
@@ -543,7 +543,7 @@ async function testNoPublishWithoutConfirmation(): Promise<void> {
     const planId = `plan_${Date.now()}_test7`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp7 = futureTimePairs(1);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't1', plan_id: planId, content: '任务', start_time: tp7[0].start_time, end_time: tp7[0].end_time, completed: 0, order_index: 0 }
     ]);
@@ -766,7 +766,7 @@ async function testConcurrentConfirmSingleActive(): Promise<void> {
     const planId = `plan_${Date.now()}_test11`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp11 = futureTimePairs(1);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't1', plan_id: planId, content: '任务', start_time: tp11[0].start_time, end_time: tp11[0].end_time, completed: 0, order_index: 0 }
     ]);
@@ -797,8 +797,8 @@ async function testConcurrentConfirmSingleActive(): Promise<void> {
     const activeCount = db2.prepare("SELECT COUNT(*) as cnt FROM plans WHERE status = 'active' AND date = ?").get(today) as { cnt: number };
     check('ConcurrentConfirm: only one active plan', activeCount.cnt === 1);
 
-    // 验证 active 唯一索引存在
-    const indexes = db2.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE '%active_unique%'").all() as Array<{ name: string }>;
+    // 验证 live 唯一索引存在（V7 起替换为 idx_plans_live_unique_per_scope_date）
+    const indexes = db2.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE '%live_unique%'").all() as Array<{ name: string }>;
     check('ConcurrentConfirm: unique index exists', indexes.length > 0);
   } finally {
     closeDatabase();
@@ -1016,7 +1016,7 @@ async function testManualEditDeleteTaskFromDB(): Promise<void> {
     const planId = `plan_${Date.now()}_test14`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp14 = futureTimePairs(3);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't14a', plan_id: planId, content: '任务A', start_time: tp14[0].start_time, end_time: tp14[0].end_time, completed: 0, order_index: 0 },
       { id: 't14b', plan_id: planId, content: '任务B', start_time: tp14[1].start_time, end_time: tp14[1].end_time, completed: 0, order_index: 1 },
@@ -1067,7 +1067,7 @@ async function testManualEditDoesNotCallModel(): Promise<void> {
 
     const planId = `plan_${Date.now()}_test15`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     const timePairs = futureTimePairs(3);
     planRepository.insertTasks([
       { id: 't15a', plan_id: planId, content: '任务A', start_time: timePairs[0].start_time, end_time: timePairs[0].end_time, completed: 0, order_index: 0 },
@@ -1215,7 +1215,7 @@ async function testOverlapAndReversedTimeCannotPublish(): Promise<void> {
     const { userId: uid, characterId: cid } = { userId: 'test-user-plan', characterId: 'test-roxy' };
     const planId = `plan_${Date.now()}_test17`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: uid, character_id: cid });
     // 插入重叠任务到数据库
     planRepository.insertTasks([
       { id: 't17a', plan_id: planId, content: '重叠任务A', start_time: '14:00', end_time: '16:00', completed: 0, order_index: 0 },
@@ -1407,7 +1407,7 @@ async function testHaoDeDoesNotAutoPublish(): Promise<void> {
     // 创建一个已有草案的场景
     const planId = `plan_${Date.now()}_test20`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     const tp = futureTimePairs(1);
     planRepository.insertTasks([
       { id: 't20a', plan_id: planId, content: '任务', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 }
@@ -1446,13 +1446,13 @@ async function testHaoDeDoesNotAutoPublish(): Promise<void> {
 async function testIllegalPatchRollbackFieldsUnchanged(): Promise<void> {
   const dbPath = tempDbPath();
   try {
-    setupTestEnv(dbPath);
+    const { userId, characterId } = setupTestEnv(dbPath);
     cleanupPlans();
 
     const planId = `plan_${Date.now()}_test21`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp = futureTimePairs(2);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't21a', plan_id: planId, content: '原始任务A', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 },
       { id: 't21b', plan_id: planId, content: '原始任务B', start_time: tp[1].start_time, end_time: tp[1].end_time, completed: 0, order_index: 1 }
@@ -1726,7 +1726,7 @@ async function testManualEditFailureReturnsOkFalse(): Promise<void> {
     const planId = `plan_${Date.now()}_test24`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp = futureTimePairs(2);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't24a', plan_id: planId, content: '任务A', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 },
       { id: 't24b', plan_id: planId, content: '任务B', start_time: tp[1].start_time, end_time: tp[1].end_time, completed: 0, order_index: 1 }
@@ -1805,7 +1805,7 @@ async function testDeleteLastTaskForbidden(): Promise<void> {
     const planId = `plan_${Date.now()}_test25`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp = futureTimePairs(1);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't25a', plan_id: planId, content: '唯一任务', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 }
     ]);
@@ -1856,7 +1856,7 @@ async function testDeleteLastTaskForbidden(): Promise<void> {
     // 验证通过 graph 路径（非手动编辑）也禁止删除最后一个任务
     cleanupPlans();
     const planId2 = `plan_${Date.now()}_test25b`;
-    planRepository.insert({ id: planId2, date: today, status: 'draft' });
+    planRepository.insert({ id: planId2, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't25b', plan_id: planId2, content: '唯一任务B', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 }
     ]);
@@ -1931,7 +1931,7 @@ async function testConfirmationPublishFailureNoLoop(): Promise<void> {
     const planId = `plan_${Date.now()}_test26`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp = futureTimePairs(1); // 10:30-11:00
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't26a', plan_id: planId, content: '即将过期任务', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 }
     ]);
@@ -2355,7 +2355,7 @@ async function testManualEditGeneratesTrace(): Promise<void> {
     const planId = `plan_${Date.now()}_test32`;
     const today = '2026-07-11';
     const tp = futureTimePairs(2);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't32a', plan_id: planId, content: '任务A', start_time: tp[0].start_time, end_time: tp[0].end_time, completed: 0, order_index: 0 },
       { id: 't32b', plan_id: planId, content: '任务B', start_time: tp[1].start_time, end_time: tp[1].end_time, completed: 0, order_index: 1 }
@@ -2437,7 +2437,7 @@ async function testPatchTasksWithoutMessage(): Promise<void> {
     const planId = `plan_${Date.now()}_test33`;
     const today = '2026-07-11'; // 固定日期，匹配 FixedClock
     const tp33 = futureTimePairs(2);
-    planRepository.insert({ id: planId, date: today, status: 'draft' });
+    planRepository.insert({ id: planId, date: today, status: 'draft', user_id: userId, character_id: characterId });
     planRepository.insertTasks([
       { id: 't1', plan_id: planId, content: '上午工作', start_time: tp33[0].start_time, end_time: tp33[0].end_time, completed: 0, order_index: 0 },
       { id: 't2', plan_id: planId, content: '下午任务', start_time: tp33[1].start_time, end_time: tp33[1].end_time, completed: 0, order_index: 1 }

@@ -30,17 +30,25 @@
 ## PlanningGraph 专属约束
 
 - 所有 planning 请求必须经过 `ModelGateway`，不得直接 `fetch`。
-- 模型只能通过七种 `AgentActionType` 表达意图，不能直接操作 repository 或执行 SQL。
+- 模型只能通过十二种 `AgentActionType` 表达意图（V7 新增 `cancel_plan`、`get_plan_by_date`、`list_plans_by_range`、`search_plans`、`get_calendar_month`），不能直接操作 repository 或执行 SQL。
 - 所有写操作必须通过经过 Zod 校验的 Planning Tools。
 - `publish_plan` 必须要求明确用户确认；不能由模型擅自发布。
 - 用户反馈优先 patch 当前草案，不得默认删除全部任务重建。
 - 计划模式使用独立消息历史，草案卡片与对话同时显示。
 - 输入框反馈、确认按钮、手动改时间都进入同一个 PlanningGraph。
 - 保留 Planning Bubble 的 renderer 展示职责，不把 UI 放进 Graph。
-- 不修改已有 migration V4，使用新的幂等 V5 migration。
+- 不修改已有 migration V4/V5，使用新的幂等 V7 migration（V6 checkpoint scope 隔离已存在）。
 - 状态面板必须显示 `planningModel` 实际解析值（`resolvedModel`）和 `response.model`（`responseModel`），不允许显示别名冒充实际模型。
-- 同时只能有一个 active 计划（部分唯一索引 `idx_plans_active_unique_per_date`）。
-- plan status 只允许 `draft` / `active` / `completed`。
+- 同时只能有一个 live plan（draft/scheduled/active），由部分唯一索引 `idx_plans_live_unique_per_scope_date` 保证。
+- plan status 只允许 `draft` / `scheduled` / `active` / `completed` / `cancelled` / `expired`。
+- 所有 plan 查询必须按 `PlanScope`（userId + characterId）隔离，不得使用全局 `getActivePlan()`/`getDraftPlan()`。
+- 跨日期计划必须通过 `validateTargetDate` 校验，过去日期默认拒绝创建和修改。
+- `validatePlanDraftByMode` 必须按 future_date/today/past_date/display_or_activation 模式分别校验。
+- Checkpoint scope_key 必须使用 `${userId}:${characterId}:${planningThreadId}` 格式（V7 新格式），向后兼容旧格式 `${userId}:${characterId}`。
+- 每日激活必须通过 `CalendarActivationService`，原子 SQL WHERE + event_outbox dedupeKey 保证幂等，不调用模型。
+- 日历月视图和日期详情查询不调用模型；只有自然语言制定或修改计划时调用 `planningModel`。
+- 工具循环上限：`MAX_READONLY_TOOL_LOOPS=3`、`MAX_MODEL_CALLS_FOR_PLANNING=3`、`MAX_GRAPH_ITERATIONS=6`。
+- 闰年 2 月 29 日、跨月、跨年、23:59 → 00:00 跨日必须正确处理。
 
 ## 文件所有权协议
 
@@ -74,6 +82,8 @@ npm.cmd test
 
 # 关键测试套件
 npx tsx tests/unit/planning-graph.test.ts        # PlanningGraph 13 场景
+npx tsx tests/unit/calendar-planning.test.ts     # V7 跨日期日历计划 20 场景
+npx tsx tests/unit/calendar-activation.test.ts   # V7 每日激活幂等 8 场景
 npx tsx tests/unit/database.test.ts              # 数据库 + migration
 npx tsx tests/unit/conversation-graph.test.ts    # ConversationGraph
 npx tsx tests/unit/proactive.test.ts             # ProactiveGraph
@@ -85,7 +95,7 @@ npm.cmd run test:packaged-new-arch               # 打包版新架构验证
 ## 常见陷阱
 
 - **PowerShell 不支持 bash 语法**：不要使用 `tail`、`$(cat <<'EOF'...EOF)` 等。改用 `Select-Object -Last N` 和临时文件 + `git commit -F`。
-- **database.test.ts 版本号**：V4/V5 migration 加入后，测试中 `version === 3` 的断言会失败，需更新为 `version === 5`。
+- **database.test.ts 版本号**：V4/V5/V6/V7 migration 加入后，测试中 `version === 3` 的断言会失败，需更新为 `version === 7`。
 - **打包版缺少新 migration**：修改 `src/infrastructure/database/migration-runner.ts` 后必须 `npm run build:ts` + `npm run pack`，否则打包版仍是旧 migration。
 - **`@langchain/core` / `@langchain/langgraph` / `zod-to-json-schema` 必须在 `dependencies` 中**：否则打包后新架构无法加载，进入 `initialization_failed` 状态。
 - **no-silent-fallback**：新架构加载失败时必须显示红色警告，不得静默回退到旧链路。

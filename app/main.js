@@ -1705,6 +1705,9 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
   const planningExtra = planningSpaceOriginalBounds
     ? currentBounds.height - planningSpaceOriginalBounds.height
     : 0;
+  const chatExtra = chatSpaceOriginalBounds
+    ? currentBounds.height - chatSpaceOriginalBounds.height
+    : 0;
   const bubbleExtra = bubbleSpaceOriginalBounds
     ? currentBounds.width - bubbleSpaceOriginalBounds.width
     : 0;
@@ -1713,6 +1716,10 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
   if (planningSpaceOriginalBounds) {
     mainWindow.setBounds(planningSpaceOriginalBounds);
     planningSpaceOriginalBounds = null;
+  }
+  if (chatSpaceOriginalBounds) {
+    mainWindow.setBounds(chatSpaceOriginalBounds);
+    chatSpaceOriginalBounds = null;
   }
   if (bubbleSpaceOriginalBounds) {
     mainWindow.setBounds(bubbleSpaceOriginalBounds);
@@ -1736,10 +1743,16 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
   const newBaseBounds = { x, y, width: nextWidth, height: nextHeight };
   mainWindow.setBounds(newBaseBounds);
 
-  // 若缩放前存在计划/气泡扩展，按新的基础尺寸重新应用，防止聊天栏/计划栏错位或被遮挡
+  // 若缩放前存在计划/聊天/气泡扩展，按新的基础尺寸重新应用，防止聊天栏/计划栏错位或被遮挡
   if (planningExtra > 0) {
     planningSpaceOriginalBounds = { ...newBaseBounds };
     const newY = Math.max(workArea.y, newBaseBounds.y - planningExtra);
+    const newHeight = newBaseBounds.height + (newBaseBounds.y - newY);
+    mainWindow.setBounds({ ...newBaseBounds, y: newY, height: newHeight });
+  }
+  if (chatExtra > 0) {
+    chatSpaceOriginalBounds = { ...newBaseBounds };
+    const newY = Math.max(workArea.y, newBaseBounds.y - chatExtra);
     const newHeight = newBaseBounds.height + (newBaseBounds.y - newY);
     mainWindow.setBounds({ ...newBaseBounds, y: newY, height: newHeight });
   }
@@ -2059,13 +2072,19 @@ ipcMain.on('drag-animation-stop', () => {
 
 // 气泡空间扩展：reminder bubble 显示时向左扩大窗口宽度，消失后恢复
 let bubbleSpaceOriginalBounds = null;
+let bubbleSpaceRefCount = 0;
 
 ipcMain.on('request-bubble-space', (_event, extraWidth) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  // 第一次请求时保存原始 bounds，后续请求不覆盖
-  if (!bubbleSpaceOriginalBounds) {
-    bubbleSpaceOriginalBounds = { ...mainWindow.getBounds() };
+  // 第一次请求时保存原始 bounds，后续请求不覆盖；使用引用计数防止
+  // 计划气泡与临时提醒气泡互相冲掉窗口空间
+  if (bubbleSpaceRefCount === 0) {
+    // 若当前正处于计划模式扩展中，以未扩展的原始 bounds 为基准，避免后续恢复错乱
+    bubbleSpaceOriginalBounds = planningSpaceOriginalBounds
+      ? { ...planningSpaceOriginalBounds }
+      : { ...mainWindow.getBounds() };
   }
+  bubbleSpaceRefCount++;
   const workArea = screen.getDisplayMatching(bubbleSpaceOriginalBounds).workArea;
   const safetyMargin = 16;
   const totalExtra = Math.round(Number(extraWidth) || 0) + safetyMargin;
@@ -2077,19 +2096,71 @@ ipcMain.on('request-bubble-space', (_event, extraWidth) => {
     newWidth -= (workArea.x - newX);
     newX = workArea.x;
   }
-  mainWindow.setBounds({
+  const targetBounds = {
     x: newX,
     y: bubbleSpaceOriginalBounds.y,
     width: newWidth,
     height: bubbleSpaceOriginalBounds.height
-  });
+  };
+  const currentBounds = mainWindow.getBounds();
+  // 若当前窗口已与目标 bounds 一致（允许 2px 误差），不再重复 setBounds，
+  // 避免重复展开/收起提醒栏时桌宠产生微动
+  const threshold = 2;
+  if (
+    Math.abs(currentBounds.x - targetBounds.x) <= threshold &&
+    Math.abs(currentBounds.y - targetBounds.y) <= threshold &&
+    Math.abs(currentBounds.width - targetBounds.width) <= threshold &&
+    Math.abs(currentBounds.height - targetBounds.height) <= threshold
+  ) {
+    return;
+  }
+  mainWindow.setBounds(targetBounds);
 });
 
 ipcMain.on('release-bubble-space', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (bubbleSpaceOriginalBounds) {
+  bubbleSpaceRefCount = Math.max(0, bubbleSpaceRefCount - 1);
+  if (bubbleSpaceRefCount === 0 && bubbleSpaceOriginalBounds) {
     mainWindow.setBounds(bubbleSpaceOriginalBounds);
     bubbleSpaceOriginalBounds = null;
+  }
+});
+
+// 聊天面板空间扩展：普通聊天模式时向上扩大窗口高度，关闭后恢复
+let chatSpaceOriginalBounds = null;
+
+ipcMain.on('request-chat-space', (_event, extraHeight) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!chatSpaceOriginalBounds) {
+    // 若当前已处于其他扩展中，以未扩展的原始 bounds 为基准
+    chatSpaceOriginalBounds = planningSpaceOriginalBounds
+      ? { ...planningSpaceOriginalBounds }
+      : bubbleSpaceOriginalBounds
+        ? { ...bubbleSpaceOriginalBounds }
+        : { ...mainWindow.getBounds() };
+  }
+  const workArea = screen.getDisplayMatching(chatSpaceOriginalBounds).workArea;
+  const safetyMargin = 24;
+  const totalExtra = Math.round(Number(extraHeight) || 0) + safetyMargin;
+  let newY = chatSpaceOriginalBounds.y - totalExtra;
+  let newHeight = chatSpaceOriginalBounds.height + totalExtra;
+  if (newY < workArea.y) {
+    newHeight -= (workArea.y - newY);
+    newY = workArea.y;
+  }
+  mainWindow.setBounds({
+    x: chatSpaceOriginalBounds.x,
+    y: newY,
+    width: chatSpaceOriginalBounds.width,
+    height: newHeight
+  });
+});
+
+ipcMain.on('release-chat-space', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (chatSpaceOriginalBounds) {
+    mainWindow.setBounds(chatSpaceOriginalBounds);
+    chatSpaceOriginalBounds = null;
   }
 });
 
@@ -2099,7 +2170,10 @@ let planningSpaceOriginalBounds = null;
 ipcMain.on('request-planning-space', (_event, extraHeight) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!planningSpaceOriginalBounds) {
-    planningSpaceOriginalBounds = { ...mainWindow.getBounds() };
+    // 若当前正处于气泡空间扩展中，以未扩展的原始 bounds 为基准
+    planningSpaceOriginalBounds = bubbleSpaceOriginalBounds
+      ? { ...bubbleSpaceOriginalBounds }
+      : { ...mainWindow.getBounds() };
   }
   const workArea = screen.getDisplayMatching(planningSpaceOriginalBounds).workArea;
   const safetyMargin = 24;
@@ -2251,6 +2325,56 @@ ipcMain.handle('planning:get-trace', async () => {
     return { ok: false, reason: 'architecture-not-ready' };
   }
   return { ok: true, trace: newArch.getPlanningTrace() };
+});
+
+// ===== 日历扩展 IPC（V7）=====
+
+/**
+ * 获取月视图计划摘要。
+ * 只返回指定月份每天的计划状态和任务数量，不加载任务详情。
+ * 切换月份不调用模型。
+ */
+ipcMain.handle('calendar:get-month', async (_event, year, month) => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return newArch.getCalendarMonth(Number(year), Number(month));
+});
+
+/**
+ * 获取指定日期的计划详情。
+ * 查看计划不调用模型。
+ */
+ipcMain.handle('calendar:get-date', async (_event, date) => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return newArch.getCalendarDate(String(date || ''));
+});
+
+/**
+ * 以指定日期打开计划模式。
+ * 用于"为这一天制定计划"入口，预先设置 targetDate 和 planningThreadId。
+ */
+ipcMain.handle('calendar:open-planning', async (_event, targetDate, userInput) => {
+  if (!planningArchReady()) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  const date = String(targetDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { ok: false, reason: 'invalid-date-format' };
+  }
+  const message = String(userInput || '').trim();
+  if (!message) {
+    // 只打开计划模式，不发送消息
+    return { ok: true, targetDate: date };
+  }
+  try {
+    const dto = await newArch.handlePlanningMessageWithDate(message, date, false);
+    return dto;
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'unknown-error' };
+  }
 });
 
 /** 启动时恢复 active plan 到桌面气泡 */

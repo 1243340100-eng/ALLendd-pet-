@@ -1,8 +1,11 @@
 /**
  * PlanningGraph 定义和 Runner。
  *
- * 流程：
- * START → load_planning_context → agent_decide → execute_tool → build_response → persist_checkpoint → END
+ * 流程（日历扩展）：
+ * START → load_planning_context → load_calendar_context → agent_decide → execute_tool → build_response → persist_checkpoint → END
+ *
+ * 只读工具循环：
+ * execute_tool（只读工具成功）→ agent_decide（带 toolResult）→ execute_tool → ...
  *
  * Runner 负责：
  * - checkpoint 恢复（从数据库加载未消费的 planning checkpoint）
@@ -14,6 +17,7 @@ import { StateGraph, START, END } from '@langchain/langgraph';
 import { PlanningState, createInitialPlanningState } from './state';
 import type { PlanningStateType, PlanningResponseDTO, PlanningTrace } from './state';
 import { createLoadPlanningContextNode } from './nodes/load-planning-context';
+import { createLoadCalendarContextNode } from './nodes/load-calendar-context';
 import { createAgentDecideNode } from './nodes/agent-decide';
 import { createExecuteToolNode } from './nodes/execute-tool';
 import { createBuildResponseNode } from './nodes/build-response';
@@ -28,9 +32,15 @@ import { createLogger } from '../../../infrastructure/logging/logger';
 
 const log = createLogger('PlanningGraph');
 
-/** 修复 5：构建 scope_key，按 userId + characterId 隔离 checkpoint */
-function buildScopeKey(userId: string, characterId: string): string {
-  return `${userId}:${characterId}`;
+/**
+ * 构建 scope_key，按 userId + characterId + planningThreadId 隔离 checkpoint。
+ * 日历扩展：planningThreadId 与 target_date 或 planId 关联，
+ * 确保同时编辑今天和未来日期的计划不会互相覆盖。
+ * 向后兼容：planningThreadId 为空时使用旧格式 userId:characterId。
+ */
+function buildScopeKey(userId: string, characterId: string, planningThreadId?: string): string {
+  const base = `${userId}:${characterId}`;
+  return planningThreadId ? `${base}:${planningThreadId}` : base;
 }
 
 /** PlanningGraph 依赖 */
@@ -44,12 +54,17 @@ export interface PlanningGraphDeps {
 const MAX_MODEL_CALLS_FOR_PLANNING = 3;
 /** 最大 Graph 迭代次数（独立于 modelCallCount，所有路径的通用循环上限） */
 const MAX_GRAPH_ITERATIONS = 6;
+/** 日历扩展：只读工具循环最大次数（防止无限循环） */
+const MAX_READONLY_TOOL_LOOPS = 3;
 
 /** 创建 PlanningGraph */
 export function createPlanningGraph(deps: PlanningGraphDeps) {
   const loadContext = createLoadPlanningContextNode({
     timeService: deps.timeService,
     userContextService: deps.userContextService
+  });
+  const loadCalendarContext = createLoadCalendarContextNode({
+    timeService: deps.timeService
   });
   const agentDecide = createAgentDecideNode({
     modelGateway: deps.modelGateway
@@ -60,15 +75,17 @@ export function createPlanningGraph(deps: PlanningGraphDeps) {
 
   const graph = new StateGraph(PlanningState)
     .addNode('load_planning_context', loadContext)
+    .addNode('load_calendar_context', loadCalendarContext)
     .addNode('agent_decide', agentDecide)
     .addNode('execute_tool', executeTool)
     .addNode('build_response', buildResponse)
     .addNode('persist_checkpoint', persistCheckpoint)
     // 主流程边
     .addEdge(START, 'load_planning_context')
-    // 修复 4：手动编辑走 load_context → execute_tool → build_response → persist_checkpoint
+    // 修复 4：手动编辑走 load_context → load_calendar_context → execute_tool → build_response → persist_checkpoint
     // 不调用模型，但使用 TimeService 和正式 Tool 节点
-    .addConditionalEdges('load_planning_context', (state: PlanningStateType) => {
+    .addEdge('load_planning_context', 'load_calendar_context')
+    .addConditionalEdges('load_calendar_context', (state: PlanningStateType) => {
       if (state.isManualEdit) {
         return 'execute_tool';
       }
@@ -77,15 +94,22 @@ export function createPlanningGraph(deps: PlanningGraphDeps) {
     .addEdge('agent_decide', 'execute_tool')
     // 阻断 1：受限工具循环 - 使用 graphIterationCount 作为通用循环上限
     // 确认发布失败不调用模型，modelCallCount 一直为 0，不能作为唯一循环限制
+    // 日历扩展：只读工具成功后路由回 agent_decide（带 toolResult）
     .addConditionalEdges('execute_tool', (state: PlanningStateType) => {
       // 手动编辑不走回环（无论成功失败都直接 build_response）
       if (state.isManualEdit) {
         return 'build_response';
       }
       // 确认发布失败：直接进入 build_response，不重试同一个确认动作
-      // isConfirmation=true 时 publish_plan 失败（如任务变成过去时间），不调用模型所以 modelCallCount=0
       if (state.isConfirmation && state.toolExecutionStatus === 'failed') {
         return 'build_response';
+      }
+      // 日历扩展：只读工具成功后路由回 agent_decide（受限循环）
+      if (state.lastToolWasReadonly && state.toolExecutionStatus === 'succeeded'
+        && state.modelCallCount < MAX_MODEL_CALLS_FOR_PLANNING
+        && state.toolAttemptCount <= MAX_READONLY_TOOL_LOOPS
+        && state.graphIterationCount < MAX_GRAPH_ITERATIONS) {
+        return 'agent_decide';
       }
       // 普通模型工具调用失败：在 modelCallCount 和 graphIterationCount 双重限制内允许自动修正
       if (state.toolExecutionStatus === 'failed'
@@ -106,11 +130,13 @@ export function createPlanningGraph(deps: PlanningGraphDeps) {
 export class PlanningGraphRunner {
   private compiledGraph: ReturnType<typeof createPlanningGraph>;
   private modelGateway: ModelGateway;
+  private timeService: TimeService;
   /** 最近一轮 Planning Trace（供 IPC 查询） */
   private lastTrace: PlanningTrace | null = null;
 
   constructor(deps: PlanningGraphDeps) {
     this.modelGateway = deps.modelGateway;
+    this.timeService = deps.timeService;
     this.compiledGraph = createPlanningGraph(deps);
   }
 
@@ -130,9 +156,35 @@ export class PlanningGraphRunner {
       }
     });
 
-    // 修复 5：checkpoint 按 userId + characterId 隔离
-    const scopeKey = buildScopeKey(initialState.userId, initialState.characterId);
-    const activeCheckpoint = checkpointRepository.getActiveByScope('planning', scopeKey);
+    // 日历扩展：checkpoint 按 userId + characterId + planningThreadId 隔离
+    // planningThreadId 可能为空（旧路径或第二轮提交未传 planningThreadId）。
+    // 读取策略：
+    //   1. 若 initialState.planningThreadId 非空，按新格式 scope_key 读取
+    //   2. 若为空，先按旧格式 scope_key 读取（向后兼容）
+    //   3. 若旧格式读不到，用 today 推导 planningThreadId='date:today' 再读新格式
+    //      （处理：第一轮 load_calendar_context 设置了 planningThreadId='date:today'，
+    //       但第二轮 submitMessage 未传 planningThreadId 的情况）
+    let resolvedPlanningThreadId = initialState.planningThreadId || '';
+    let activeCheckpoint = null;
+    if (resolvedPlanningThreadId) {
+      const scopeKey = buildScopeKey(initialState.userId, initialState.characterId, resolvedPlanningThreadId);
+      activeCheckpoint = checkpointRepository.getActiveByScope('planning', scopeKey);
+    } else {
+      // 先试旧格式
+      const legacyScopeKey = buildScopeKey(initialState.userId, initialState.characterId);
+      activeCheckpoint = checkpointRepository.getActiveByScope('planning', legacyScopeKey);
+      // 旧格式读不到，试新格式 date:today
+      if (!activeCheckpoint) {
+        const todayDate = this.timeService.getTodayDateString();
+        resolvedPlanningThreadId = `date:${todayDate}`;
+        const newScopeKey = buildScopeKey(initialState.userId, initialState.characterId, resolvedPlanningThreadId);
+        activeCheckpoint = checkpointRepository.getActiveByScope('planning', newScopeKey);
+        // 新格式也读不到，回退到空 planningThreadId（保留旧格式行为）
+        if (!activeCheckpoint) {
+          resolvedPlanningThreadId = '';
+        }
+      }
+    }
     let state = initialState;
     if (activeCheckpoint) {
       try {
@@ -147,7 +199,10 @@ export class PlanningGraphRunner {
           draftVersion: saved.draftVersion ?? initialState.draftVersion,
           userConfirmed: initialState.userConfirmed || saved.userConfirmed || false,
           awaitingConfirmation: saved.awaitingConfirmation ?? false,
-          checkpointId: activeCheckpoint.id
+          checkpointId: activeCheckpoint.id,
+          // 日历扩展：恢复 planningThreadId 和 targetDate
+          planningThreadId: resolvedPlanningThreadId || saved.planningThreadId || '',
+          targetDate: initialState.targetDate || saved.targetDate || ''
         };
         // 不立即消费 checkpoint，等 persist_checkpoint 节点决定
         // 如果本轮产生新的 checkpoint，旧的会被覆盖；如果发布成功，旧的会被消费
@@ -157,7 +212,8 @@ export class PlanningGraphRunner {
             checkpointId: activeCheckpoint.id,
             reason: activeCheckpoint.reason,
             savedMessageCount: saved.messages?.length ?? 0,
-            savedDraftVersion: saved.draftVersion
+            savedDraftVersion: saved.draftVersion,
+            planningThreadId: resolvedPlanningThreadId || saved.planningThreadId || ''
           }
         });
       } catch (error) {
@@ -220,6 +276,7 @@ export class PlanningGraphRunner {
   /**
    * 便捷方法：提交用户消息并获取响应。
    * 供 integration.ts / main.js 调用。
+   * 日历扩展：支持 planningThreadId 和 targetDate 参数。
    */
   async submitMessage(params: {
     userId: string;
@@ -227,6 +284,9 @@ export class PlanningGraphRunner {
     userInput: string;
     isConfirmation?: boolean;
     isManualEdit?: boolean;
+    planningThreadId?: string;
+    targetDate?: string;
+    selectedDate?: string;
   }): Promise<PlanningResponseDTO> {
     const initialState = createInitialPlanningState(params);
     const result = await this.run(initialState);
@@ -261,9 +321,26 @@ export class PlanningGraphRunner {
       }
     });
 
-    // 修复 5：checkpoint 按 userId + characterId 隔离
-    const scopeKey = buildScopeKey(params.userId, params.characterId);
-    const activeCheckpoint = checkpointRepository.getActiveByScope('planning', scopeKey);
+    // 日历扩展：checkpoint 按 userId + characterId + planningThreadId 隔离
+    // 同 run() 的读取策略：planningThreadId 为空时先试旧格式，再试 date:today 新格式
+    let manualThreadId = initialState.planningThreadId || '';
+    let activeCheckpoint = null;
+    if (manualThreadId) {
+      const scopeKey = buildScopeKey(params.userId, params.characterId, manualThreadId);
+      activeCheckpoint = checkpointRepository.getActiveByScope('planning', scopeKey);
+    } else {
+      const legacyScopeKey = buildScopeKey(params.userId, params.characterId);
+      activeCheckpoint = checkpointRepository.getActiveByScope('planning', legacyScopeKey);
+      if (!activeCheckpoint) {
+        const todayDate = this.timeService.getTodayDateString();
+        manualThreadId = `date:${todayDate}`;
+        const newScopeKey = buildScopeKey(params.userId, params.characterId, manualThreadId);
+        activeCheckpoint = checkpointRepository.getActiveByScope('planning', newScopeKey);
+        if (!activeCheckpoint) {
+          manualThreadId = '';
+        }
+      }
+    }
     let state = initialState;
     if (activeCheckpoint) {
       try {
@@ -276,7 +353,9 @@ export class PlanningGraphRunner {
           currentDraft: saved.currentDraft ?? null,
           draftVersion: saved.draftVersion ?? initialState.draftVersion,
           awaitingConfirmation: saved.awaitingConfirmation ?? false,
-          checkpointId: activeCheckpoint.id
+          checkpointId: activeCheckpoint.id,
+          planningThreadId: manualThreadId || saved.planningThreadId || '',
+          targetDate: initialState.targetDate || saved.targetDate || ''
         };
       } catch {
         checkpointRepository.consume(activeCheckpoint.id);
@@ -287,7 +366,9 @@ export class PlanningGraphRunner {
     if (!state.currentDraft) {
       try {
         const { toPlanDraft } = require('./tools');
-        const draftPlan = planRepository.getDraftPlan();
+        const scope = { userId: params.userId, characterId: params.characterId };
+        const todayDate = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+        const draftPlan = planRepository.getDraftPlanByDate(scope, state.targetDate || todayDate);
         if (draftPlan && draftPlan.id === params.planId) {
           state.currentDraft = toPlanDraft(
             { id: draftPlan.id, date: draftPlan.date, tasks: draftPlan.tasks },
@@ -325,29 +406,33 @@ export class PlanningGraphRunner {
   /**
    * 获取当前规划状态（供 planning:start 恢复用）。
    * 返回持久化的 messages、phase、awaitingConfirmation。
-   * 修复 5：按 userId + characterId 隔离。
+   * 日历扩展：按 userId + characterId + planningThreadId 隔离。
    */
-  getPlanningState(userId?: string, characterId?: string): {
+  getPlanningState(userId?: string, characterId?: string, planningThreadId?: string): {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     phase: 'idle' | 'asking' | 'drafting' | 'awaiting_confirmation' | 'published';
     awaitingConfirmation: boolean;
     currentDraft: import('./state').PlanDraft | null;
   } {
-    // 修复 5：按 userId + characterId 隔离
-    const scopeKey = userId && characterId ? buildScopeKey(userId, characterId) : '';
+    // 日历扩展：按 userId + characterId + planningThreadId 隔离
+    const scopeKey = userId && characterId ? buildScopeKey(userId, characterId, planningThreadId) : '';
     const activeCheckpoint = scopeKey
       ? checkpointRepository.getActiveByScope('planning', scopeKey)
       : checkpointRepository.getActive('planning');
     if (!activeCheckpoint) {
-      // 没有 checkpoint，检查是否有 draft 计划
-      const draft = planRepository.getDraftPlan();
-      if (draft) {
-        return {
-          messages: [],
-          phase: 'drafting',
-          awaitingConfirmation: false,
-          currentDraft: null
-        };
+      // 没有 checkpoint，检查是否有 draft 计划（使用 scope 隔离）
+      if (userId && characterId) {
+        const scope = { userId, characterId };
+        const todayDate = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+        const draft = planRepository.getDraftPlanByDate(scope, todayDate);
+        if (draft) {
+          return {
+            messages: [],
+            phase: 'drafting',
+            awaitingConfirmation: false,
+            currentDraft: null
+          };
+        }
       }
       return {
         messages: [],
@@ -370,8 +455,11 @@ export class PlanningGraphRunner {
       let currentDraft: import('./state').PlanDraft | null = null;
       if (saved.currentDraft) {
         currentDraft = saved.currentDraft;
-      } else {
-        const draft = planRepository.getDraftPlan();
+      } else if (userId && characterId) {
+        // 使用 scope 隔离查询
+        const scope = { userId, characterId };
+        const targetDate = saved.targetDate || new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+        const draft = planRepository.getDraftPlanByDate(scope, targetDate);
         if (draft) {
           const { toPlanDraft } = require('./tools');
           currentDraft = toPlanDraft(

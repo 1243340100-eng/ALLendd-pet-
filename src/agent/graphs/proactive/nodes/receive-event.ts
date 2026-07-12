@@ -6,6 +6,7 @@
  * - reminder_due → reminder
  * - startup → startup_digest
  * - daily_greeting_due → daily_greeting
+ * - daily_plan_due → daily_plan（日历扩展：当天计划激活后触发）
  */
 import type { ProactiveStateType, ProactiveStateUpdate, ProactiveType } from '../state';
 import { createLogger } from '../../../../infrastructure/logging/logger';
@@ -21,6 +22,8 @@ export function inferProactiveType(eventType: string): ProactiveType {
       return 'startup_digest';
     case 'daily_greeting_due':
       return 'daily_greeting';
+    case 'daily_plan_due':
+      return 'daily_plan';
     default:
       return 'daily_greeting';
   }

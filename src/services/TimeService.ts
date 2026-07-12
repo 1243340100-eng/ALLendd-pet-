@@ -304,4 +304,95 @@ export class TimeService {
       day: '2-digit'
     }).format(this.clock.now()).replace(/\//g, '-');
   }
+
+  /**
+   * 校验本地日期字符串格式（YYYY-MM-DD）。
+   * 同时校验是否为真实存在的日期（覆盖闰年、跨月、跨年）。
+   */
+  isValidLocalDate(dateStr: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+    const [y, m, d] = dateStr.split('-').map(Number);
+    if (m < 1 || m > 12) return false;
+    if (d < 1 || d > 31) return false;
+    // 构造 Date 时使用中午 12:00 UTC 避免时区边界问题
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    // 验证回读后是否一致（防止 2 月 30 日等溢出）
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }
+
+  /**
+   * 比较两个本地日期字符串（YYYY-MM-DD）。
+   * 返回 -1 / 0 / 1（a 早于 / 等于 / 晚于 b）。
+   * 不假设两个日期是 UTC，按字面数值比较。
+   */
+  compareLocalDate(a: string, b: string): number {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  }
+
+  /**
+   * 将目标日期分类为未来/今天/过去。
+   * todayDate 必须由调用方提供（保证测试可注入）。
+   */
+  classifyTargetDate(targetDate: string, todayDate: string): 'future_date' | 'today' | 'past_date' {
+    const cmp = this.compareLocalDate(targetDate, todayDate);
+    if (cmp > 0) return 'future_date';
+    if (cmp === 0) return 'today';
+    return 'past_date';
+  }
+
+  /**
+   * 在 YYYY-MM-DD 上加减天数，返回新的 YYYY-MM-DD。
+   * 使用 UTC 中午构造避免时区偏移导致跳日。
+   */
+  addDays(dateStr: string, days: number): string {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+    dt.setUTCDate(dt.getUTCDate() + days);
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  /**
+   * 获取指定月份的所有日期（YYYY-MM-DD）。
+   * month 为 1-12。返回该月 1 日到月末的所有日期。
+   */
+  getMonthDates(year: number, month: number): string[] {
+    if (month < 1 || month > 12) return [];
+    const dates: string[] = [];
+    // 构造当月 1 日
+    const dt = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+    while (dt.getUTCMonth() === month - 1) {
+      const yy = dt.getUTCFullYear();
+      const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getUTCDate()).padStart(2, '0');
+      dates.push(`${yy}-${mm}-${dd}`);
+      dt.setUTCDate(dt.getUTCDate() + 1);
+    }
+    return dates;
+  }
+
+  /**
+   * 生成人类可读的日期偏移描述（用于 prompt 和消息）。
+   * 例如：今天 / 明天 / 后天 / 3 天后 / 昨天 / 2 天前 / 2026-07-20
+   */
+  describeDateOffset(targetDate: string, todayDate: string): string {
+    const cmp = this.compareLocalDate(targetDate, todayDate);
+    if (cmp === 0) return '今天';
+    // 计算天数差
+    const [ty, tm, td] = targetDate.split('-').map(Number);
+    const [ny, nm, nd] = todayDate.split('-').map(Number);
+    const targetMs = Date.UTC(ty, tm - 1, td, 12, 0, 0);
+    const todayMs = Date.UTC(ny, nm - 1, nd, 12, 0, 0);
+    const dayDiff = Math.round((targetMs - todayMs) / 86400000);
+    if (dayDiff === 1) return '明天';
+    if (dayDiff === 2) return '后天';
+    if (dayDiff === -1) return '昨天';
+    if (dayDiff > 0 && dayDiff <= 7) return `${dayDiff} 天后`;
+    if (dayDiff < 0 && dayDiff >= -7) return `${-dayDiff} 天前`;
+    return targetDate;
+  }
 }

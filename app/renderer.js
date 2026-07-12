@@ -43,6 +43,22 @@ const planningBubble = document.getElementById('planningBubble');
 const planBubbleMinimize = document.getElementById('planBubbleMinimize');
 const planBubbleTimeline = document.getElementById('planBubbleTimeline');
 const planBubbleRestore = document.getElementById('planBubbleRestore');
+// 日历相关 DOM（V7 跨日期计划）
+const calendarToggle = document.getElementById('calendarToggle');
+const calendarPanel = document.getElementById('calendarPanel');
+const calendarClose = document.getElementById('calendarClose');
+const calendarPrevMonth = document.getElementById('calendarPrevMonth');
+const calendarNextMonth = document.getElementById('calendarNextMonth');
+const calendarToday = document.getElementById('calendarToday');
+const calendarMonthLabel = document.getElementById('calendarMonthLabel');
+const calendarGrid = document.getElementById('calendarGrid');
+const calendarDetail = document.getElementById('calendarDetail');
+const calendarDetailDate = document.getElementById('calendarDetailDate');
+const calendarDetailStatus = document.getElementById('calendarDetailStatus');
+const calendarDetailTasks = document.getElementById('calendarDetailTasks');
+const calendarDetailClose = document.getElementById('calendarDetailClose');
+const calendarEditPlan = document.getElementById('calendarEditPlan');
+const calendarCreatePlan = document.getElementById('calendarCreatePlan');
 const stateToggle = document.getElementById('stateToggle');
 const languageToggle = document.getElementById('languageToggle');
 const statePanel = document.getElementById('statePanel');
@@ -366,7 +382,7 @@ let clockTimer = null;
 let bubbleTimer = null;
 let dragReturnTimer = null;
 let restoreTimers = [];
-let scale = Number(localStorage.getItem(lsKey('scale')) || '1.18');
+let scale = Number(localStorage.getItem(lsKey('scale')) || '0.826');
 let reminderMinutes = Number(localStorage.getItem(lsKey('reminder-minutes')) || '45');
 let lastNightReminderDate = localStorage.getItem(lsKey('last-night-date')) || '';
 let dragAnimating = false;
@@ -862,11 +878,17 @@ async function saveApiSettings(clearApiKey = false) {
 function openChatPanel() {
   closeApiPanel();
   closeStatePanel();
+  if (!planningMode) {
+    window.petAPI?.requestChatSpace?.(CHAT_EXTRA_HEIGHT);
+  }
   chatPanel.classList.remove('hidden');
   focusChatInput();
 }
 
 function closeChatPanel() {
+  if (!planningMode) {
+    window.petAPI?.releaseChatSpace?.();
+  }
   chatPanel.classList.add('hidden');
 }
 
@@ -1495,7 +1517,9 @@ async function sendChatMessage(event) {
 let planningMode = false;
 let planningBusy = false;
 let currentDraftPlan = null;
-const PLANNING_EXTRA_HEIGHT = 360;
+let planBubbleSpaceActive = false;
+const PLANNING_EXTRA_HEIGHT = 620;
+const CHAT_EXTRA_HEIGHT = 360;
 
 /** 简易 HTML 转义 */
 function escapeHtml(text) {
@@ -1518,10 +1542,26 @@ async function enterPlanningMode() {
   // 如果已有 active 计划，直接显示气泡而非重新制定
   const result = await window.petAPI?.startPlanningMode?.();
   if (result?.activePlan) {
-    renderPlanBubble(result.activePlan);
-    return;
+    const tasks = result.activePlan.tasks || [];
+    const allCompleted = tasks.length > 0 && tasks.every((t) => t.completed);
+    if (allCompleted) {
+      // 任务全部完成时打开计划面板，自动收起桌面提醒栏，避免遮挡面板
+      closePlanBubble();
+      // 继续进入计划模式，不直接返回，让用户可以制定新计划
+    } else {
+      renderPlanBubble(result.activePlan);
+      return;
+    }
+  } else if (!planningBubble.classList.contains('hidden')) {
+    // 没有 active 计划（例如计划已被标记为 completed），但桌面提醒栏仍可见时，
+    // 打开计划面板前先关闭提醒栏
+    closePlanBubble();
   }
   planningMode = true;
+  chatPanel.classList.remove('hidden');
+  // 从普通聊天扩展切换到计划扩展，避免重复占用空间
+  window.petAPI?.releaseChatSpace?.();
+  window.petAPI?.requestPlanningSpace?.(PLANNING_EXTRA_HEIGHT);
   chatLog.classList.add('hidden');
   planningView.classList.remove('hidden');
   planningView.classList.remove('planning-view--leave');
@@ -1530,7 +1570,6 @@ async function enterPlanningMode() {
   chatPanelTitle.textContent = '制定今日计划';
   chatInput.placeholder = '告诉我今天的目标...';
   planModeToggle?.classList.add('active');
-  window.petAPI?.requestPlanningSpace?.(PLANNING_EXTRA_HEIGHT);
   // 修复 5：恢复真实的规划对话历史，不显示一条虚假的通用提示代替历史
   clearPlanningConversation();
   if (Array.isArray(result?.messages) && result.messages.length > 0) {
@@ -1556,6 +1595,10 @@ function exitPlanningMode() {
   planningView.classList.add('planning-view--leave');
   chatLog.classList.remove('hidden');
   window.petAPI?.releasePlanningSpace?.();
+  // 退出规划后如果聊天面板仍打开则切回普通聊天扩展
+  if (!chatPanel.classList.contains('hidden')) {
+    window.petAPI?.requestChatSpace?.(CHAT_EXTRA_HEIGHT);
+  }
   setTimeout(() => {
     planningView.classList.add('hidden');
     planningView.classList.remove('planning-view--leave');
@@ -1932,8 +1975,10 @@ async function confirmPlan() {
     const result = await window.petAPI?.confirmPlan?.();
     if (result?.ok) {
       if (result.published) {
-        renderPlanBubble(result.plan);
+        // 先退出计划模式释放扩展空间，再显示计划气泡请求气泡空间，
+        // 避免计划空间的回退把刚请求的气泡空间一起取消导致位置错乱
         exitPlanningMode();
+        renderPlanBubble(result.plan);
       } else if (result.message) {
         // 模型可能还在请求确认或需要补充信息
         appendPlanningMessage('assistant', result.message);
@@ -1982,10 +2027,33 @@ async function revisePlan() {
 function renderPlanBubble(plan) {
   if (!plan || !plan.tasks) return;
   planningBubble.classList.remove('hidden');
-  planBubbleRestore?.classList.add('hidden');
+  hideRestoreButton();
   renderPlanTimeline(plan.tasks);
-  // 计划气泡显示时请求扩大窗口
-  window.petAPI?.requestBubbleSpace?.(320);
+  // 计划气泡显示时请求扩大窗口；避免重复请求导致引用计数泄漏
+  if (!planBubbleSpaceActive) {
+    window.petAPI?.requestBubbleSpace?.(320);
+    planBubbleSpaceActive = true;
+  }
+}
+
+/** 带动画显示恢复按钮 */
+function showRestoreButton() {
+  if (!planBubbleRestore) return;
+  planBubbleRestore.classList.remove('hidden');
+  planBubbleRestore.classList.add('plan-bubble__restore--enter');
+  setTimeout(() => {
+    planBubbleRestore.classList.remove('plan-bubble__restore--enter');
+  }, 260);
+}
+
+/** 带动画隐藏恢复按钮 */
+function hideRestoreButton() {
+  if (!planBubbleRestore || planBubbleRestore.classList.contains('hidden')) return;
+  planBubbleRestore.classList.add('plan-bubble__restore--leave');
+  setTimeout(() => {
+    planBubbleRestore.classList.add('hidden');
+    planBubbleRestore.classList.remove('plan-bubble__restore--leave');
+  }, 260);
 }
 
 /** 渲染时间线任务列表 */
@@ -2036,18 +2104,287 @@ async function handleTaskToggle(taskId) {
   }
 }
 
-/** 最小化计划气泡 */
+/** 最小化计划气泡（保留窗口空间，避免展开/收起时桌宠移动） */
 function minimizePlanBubble() {
   planningBubble.classList.add('hidden');
-  planBubbleRestore?.classList.remove('hidden');
-  window.petAPI?.releaseBubbleSpace?.();
+  showRestoreButton();
+  // 不释放气泡空间：让窗口保持展开，点击“今日计划”恢复时桌宠不会移动
+}
+
+/** 关闭计划气泡并释放窗口空间（用于计划完成或被替代时真正清理） */
+function closePlanBubble() {
+  planningBubble.classList.add('hidden');
+  hideRestoreButton();
+  if (planBubbleSpaceActive) {
+    window.petAPI?.releaseBubbleSpace?.();
+    planBubbleSpaceActive = false;
+  }
 }
 
 /** 恢复计划气泡 */
 function restorePlanBubble() {
   planningBubble.classList.remove('hidden');
-  planBubbleRestore?.classList.add('hidden');
-  window.petAPI?.requestBubbleSpace?.(320);
+  hideRestoreButton();
+  if (!planBubbleSpaceActive) {
+    window.petAPI?.requestBubbleSpace?.(320);
+    planBubbleSpaceActive = true;
+  }
+}
+
+// ===== 日历面板（V7 跨日期计划）=====
+let calendarViewYear = 0;
+let calendarViewMonth = 0; // 1-12
+let calendarSelectedDate = ''; // YYYY-MM-DD
+let calendarDetailPlan = null; // 当前详情面板展示的计划
+const CALENDAR_EXTRA_HEIGHT = 420;
+
+/** 获取今天日期（本地时区，YYYY-MM-DD） */
+function getTodayDateString() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** 打开日历面板 */
+async function openCalendarPanel() {
+  calendarPanel.classList.remove('hidden');
+  // 关闭其他面板避免重叠
+  if (!statePanel.classList.contains('hidden')) closeStatePanel();
+  if (!apiPanel.classList.contains('hidden')) closeApiPanel();
+  // 请求扩大窗口高度以容纳日历
+  window.petAPI?.requestChatSpace?.(CALENDAR_EXTRA_HEIGHT);
+  // 默认显示当月
+  const today = new Date();
+  calendarViewYear = today.getFullYear();
+  calendarViewMonth = today.getMonth() + 1;
+  calendarSelectedDate = '';
+  calendarDetail.classList.add('hidden');
+  await refreshCalendarMonth();
+}
+
+/** 关闭日历面板 */
+function closeCalendarPanel() {
+  calendarPanel.classList.add('hidden');
+  calendarDetail.classList.add('hidden');
+  calendarSelectedDate = '';
+  calendarDetailPlan = null;
+  window.petAPI?.releaseChatSpace?.();
+}
+
+/** 刷新月视图（不调用模型） */
+async function refreshCalendarMonth() {
+  if (!calendarViewYear || !calendarViewMonth) return;
+  calendarMonthLabel.textContent = `${calendarViewYear} 年 ${calendarViewMonth} 月`;
+  calendarGrid.innerHTML = '<div class="calendar-grid__loading">加载中...</div>';
+  try {
+    const result = await window.petAPI?.getCalendarMonth?.(calendarViewYear, calendarViewMonth);
+    if (!result?.ok) {
+      calendarGrid.innerHTML = `<div class="calendar-grid__loading">${escapeHtml(result?.reason || '加载失败')}</div>`;
+      return;
+    }
+    renderCalendarGrid(result.days || []);
+  } catch (e) {
+    calendarGrid.innerHTML = `<div class="calendar-grid__loading">加载失败：${escapeHtml(e?.message || '')}</div>`;
+  }
+}
+
+/** 渲染月视图网格 */
+function renderCalendarGrid(daysInfo) {
+  calendarGrid.innerHTML = '';
+  // daysInfo: [{ date, status, taskCount, completedCount }]
+  const dayMap = new Map();
+  for (const d of daysInfo) {
+    dayMap.set(d.date, d);
+  }
+  // 计算月份第一天是周几（0=周日）
+  const firstDay = new Date(calendarViewYear, calendarViewMonth - 1, 1);
+  const startWeekday = firstDay.getDay();
+  // 当月天数
+  const daysInMonth = new Date(calendarViewYear, calendarViewMonth, 0).getDate();
+  const today = getTodayDateString();
+
+  // 前置空白
+  for (let i = 0; i < startWeekday; i++) {
+    const blank = document.createElement('div');
+    blank.className = 'calendar-grid__cell calendar-grid__cell--blank';
+    calendarGrid.appendChild(blank);
+  }
+  // 日期格子
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${calendarViewYear}-${String(calendarViewMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const info = dayMap.get(dateStr);
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'calendar-grid__cell';
+    cell.dataset.date = dateStr;
+    if (dateStr === today) cell.classList.add('calendar-grid__cell--today');
+    if (dateStr === calendarSelectedDate) cell.classList.add('calendar-grid__cell--selected');
+    if (info) {
+      cell.classList.add(`calendar-grid__cell--${info.status || 'draft'}`);
+      cell.innerHTML = `
+        <span class="calendar-grid__day">${day}</span>
+        <span class="calendar-grid__badge">${info.taskCount || 0}</span>
+        ${info.taskCount > 0 && info.completedCount === info.taskCount
+          ? '<span class="calendar-grid__check" aria-label="已完成">✓</span>'
+          : ''}
+      `;
+    } else {
+      cell.innerHTML = `<span class="calendar-grid__day">${day}</span>`;
+    }
+    cell.addEventListener('click', () => selectCalendarDate(dateStr));
+    calendarGrid.appendChild(cell);
+  }
+}
+
+/** 切换到上个月 */
+function calendarGoPrevMonth() {
+  calendarViewMonth -= 1;
+  if (calendarViewMonth < 1) {
+    calendarViewMonth = 12;
+    calendarViewYear -= 1;
+  }
+  refreshCalendarMonth();
+}
+
+/** 切换到下个月 */
+function calendarGoNextMonth() {
+  calendarViewMonth += 1;
+  if (calendarViewMonth > 12) {
+    calendarViewMonth = 1;
+    calendarViewYear += 1;
+  }
+  refreshCalendarMonth();
+}
+
+/** 回到今天 */
+function calendarGoToday() {
+  const today = new Date();
+  calendarViewYear = today.getFullYear();
+  calendarViewMonth = today.getMonth() + 1;
+  refreshCalendarMonth();
+}
+
+/** 选择日期查看详情（不调用模型） */
+async function selectCalendarDate(dateStr) {
+  calendarSelectedDate = dateStr;
+  // 更新网格选中态
+  const cells = calendarGrid.querySelectorAll('.calendar-grid__cell');
+  cells.forEach((c) => {
+    c.classList.toggle('calendar-grid__cell--selected', c.dataset.date === dateStr);
+  });
+  // 加载详情
+  calendarDetail.classList.remove('hidden');
+  calendarDetailDate.textContent = dateStr;
+  calendarDetailStatus.textContent = '加载中...';
+  calendarDetailTasks.innerHTML = '';
+  calendarEditPlan.classList.add('hidden');
+  calendarCreatePlan.classList.add('hidden');
+  calendarDetailPlan = null;
+  try {
+    const result = await window.petAPI?.getCalendarDate?.(dateStr);
+    if (!result?.ok) {
+      calendarDetailStatus.textContent = result?.reason || '加载失败';
+      return;
+    }
+    renderCalendarDetail(dateStr, result.plan);
+  } catch (e) {
+    calendarDetailStatus.textContent = '加载失败：' + (e?.message || '');
+  }
+}
+
+/** 渲染日期详情 */
+function renderCalendarDetail(dateStr, plan) {
+  calendarDetailPlan = plan;
+  const today = getTodayDateString();
+  const isPast = dateStr < today;
+  const isFuture = dateStr > today;
+  if (!plan) {
+    calendarDetailStatus.textContent = isPast ? '当天无计划记录' : '当天尚无计划';
+    calendarDetailTasks.innerHTML = '<div class="calendar-detail__empty">无任务</div>';
+    if (isFuture || dateStr === today) {
+      calendarCreatePlan.classList.remove('hidden');
+      calendarEditPlan.classList.add('hidden');
+    } else {
+      calendarCreatePlan.classList.add('hidden');
+      calendarEditPlan.classList.add('hidden');
+    }
+    return;
+  }
+  // 有计划
+  const statusText = {
+    draft: '草案',
+    scheduled: '已安排（未来计划）',
+    active: '今日生效',
+    completed: '已完成',
+    cancelled: '已取消',
+    expired: '已过期'
+  }[plan.status] || plan.status;
+  const tasks = plan.tasks || [];
+  const completed = tasks.filter((t) => t.completed).length;
+  calendarDetailStatus.textContent = `${statusText} · ${completed}/${tasks.length} 任务`;
+  calendarDetailTasks.innerHTML = '';
+  if (tasks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'calendar-detail__empty';
+    empty.textContent = '无任务';
+    calendarDetailTasks.appendChild(empty);
+  } else {
+    // 按开始时间排序
+    const sorted = [...tasks].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+    for (const task of sorted) {
+      const el = document.createElement('div');
+      el.className = 'calendar-detail__task' + (task.completed ? ' calendar-detail__task--completed' : '');
+      el.innerHTML = `
+        <span class="calendar-detail__task-time">${escapeHtml(task.start_time || '--:--')}</span>
+        <span class="calendar-detail__task-text">${escapeHtml(task.content || '')}</span>
+      `;
+      calendarDetailTasks.appendChild(el);
+    }
+  }
+  // 操作按钮：draft/active/scheduled 状态可编辑；未来日期或今天可创建新计划
+  const editable = ['draft', 'scheduled', 'active'].includes(plan.status);
+  if (editable) {
+    calendarEditPlan.classList.remove('hidden');
+  } else {
+    calendarEditPlan.classList.add('hidden');
+  }
+  // 已有计划时隐藏"为这一天制定计划"（同一日期只允许一个 live plan）
+  calendarCreatePlan.classList.add('hidden');
+}
+
+/** "在计划模式中编辑" — 切换到计划模式并加载该日期计划 */
+async function calendarEditCurrentPlan() {
+  if (!calendarDetailPlan) return;
+  const targetDate = calendarDetailPlan.date || calendarSelectedDate;
+  closeCalendarPanel();
+  // 进入计划模式
+  await enterPlanningMode();
+  // 如果当前计划不是今天的草案，需要通过 calendar:open-planning 切换 planningThreadId
+  // 这里使用 openPlanningWithDate 不发送消息，只设置 targetDate
+  try {
+    await window.petAPI?.openPlanningWithDate?.(targetDate, '');
+  } catch (e) {
+    console.error('[calendar] open planning with date failed:', e);
+  }
+  // 刷新计划对话状态
+  await refreshPlanningModelInfo();
+}
+
+/** "为这一天制定计划" — 打开计划模式并预填目标日期 */
+async function calendarCreateForDate() {
+  if (!calendarSelectedDate) return;
+  const targetDate = calendarSelectedDate;
+  closeCalendarPanel();
+  await enterPlanningMode();
+  try {
+    await window.petAPI?.openPlanningWithDate?.(targetDate, '');
+  } catch (e) {
+    console.error('[calendar] open planning for date failed:', e);
+  }
+  appendPlanningMessage('assistant', `好的，我们为 ${targetDate} 制定计划，告诉我你的目标。`);
+  await refreshPlanningModelInfo();
 }
 
 // 监听 main 推送的计划发布事件（启动恢复）
@@ -2073,6 +2410,21 @@ bindEvent(confirmPlanBtn, 'click', confirmPlan);
 bindEvent(revisePlanBtn, 'click', revisePlan);
 bindEvent(planBubbleMinimize, 'click', minimizePlanBubble);
 bindEvent(planBubbleRestore, 'click', restorePlanBubble);
+// 日历面板事件绑定
+bindEvent(calendarToggle, 'click', openCalendarPanel);
+bindEvent(calendarClose, 'click', closeCalendarPanel);
+bindEvent(calendarPrevMonth, 'click', calendarGoPrevMonth);
+bindEvent(calendarNextMonth, 'click', calendarGoNextMonth);
+bindEvent(calendarToday, 'click', calendarGoToday);
+bindEvent(calendarDetailClose, 'click', () => {
+  calendarDetail.classList.add('hidden');
+  calendarSelectedDate = '';
+  // 取消网格选中态
+  const cells = calendarGrid.querySelectorAll('.calendar-grid__cell--selected');
+  cells.forEach((c) => c.classList.remove('calendar-grid__cell--selected'));
+});
+bindEvent(calendarEditPlan, 'click', calendarEditCurrentPlan);
+bindEvent(calendarCreatePlan, 'click', calendarCreateForDate);
 bindEvent(stateToggle, 'click', openStatePanel);
 bindEvent(stateClose, 'click', closeStatePanel);
 bindEvent(languageToggle, 'click', toggleLanguage);

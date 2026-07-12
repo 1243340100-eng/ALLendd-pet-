@@ -117,6 +117,75 @@ V1 之后桌宠的"计划模式"由独立的 `PlanningGraph` LangGraph Agent 驱
 - 保留 Planning Bubble 的 renderer 展示职责，不把 UI 放进 Graph。
 - 不修改已有 migration V4，使用新的幂等 V5 migration。
 
+## V7 跨日期日历计划
+
+V7 在 PlanningGraph 基础上扩展跨日期计划能力。新增日历 UI、PlanMemoryRetriever、CalendarActivationService 和 V7 migration，支持未来日期计划、每日自动激活和日历视图。相关文件：
+
+- `src/agent/graphs/planning/state.ts`：`AgentActionType` 扩展至 12 种（新增 `cancel_plan`、`get_plan_by_date`、`list_plans_by_range`、`search_plans`、`get_calendar_month`），`PlanningState` 新增 `planningThreadId`、`targetDate`、`selectedDate` 等字段。
+- `src/agent/graphs/planning/graph.ts`：StateGraph 流程扩展为 `START → load_planning_context → load_calendar_context → agent_decide → execute_tool → build_response → persist_checkpoint → END`；`PlanningGraphRunner` 新增 `timeService` 字段和 3 层 checkpoint 读取策略（新格式 `userId:characterId:planningThreadId` → 旧格式 `userId:characterId` → `date:today` 新格式）。
+- `src/agent/graphs/planning/nodes/load-calendar-context.ts`：新节点，按 scope 加载 `selectedDate`、`selectedPlan`、`planSearchResults` 上下文。
+- `src/agent/graphs/planning/nodes/agent-decide.ts`：system prompt 扩展日历工具说明。
+- `src/agent/graphs/planning/nodes/execute-tool.ts`：`executePlanningTool` 调用传入 `scope`，`create_draft` 写入 plans 时携带 `user_id`/`character_id`。
+- `src/agent/graphs/planning/tools.ts`：新增 `validateTargetDate`（返回 future_date/today/past_date 模式）、`validatePlanDraftByMode`（4 种校验模式），`executePlanningTool` context 新增 `scope` 字段。
+- `src/services/PlanMemoryRetriever.ts`：计划记忆只读检索服务，返回有限结构化摘要（max 8 tasks/plan，max 60 chars content）。
+- `src/services/CalendarActivationService.ts`：每日激活 scheduled → active，原子 SQL WHERE + event_outbox dedupeKey 保证幂等。
+- `src/infrastructure/database/migration-runner.ts` → V7 `calendar_planning_extensions`：幂等扩展 plans 表，新增 `user_id`/`character_id`/`timezone`/`activated_at`/`completed_at`/`cancelled_at` 列，新增 `scheduled`/`cancelled`/`expired` 状态，新增 `idx_plans_live_unique_per_scope_date` 部分唯一索引（同一 user + character + date 只允许一个 live plan：draft/scheduled/active）。
+- `src/infrastructure/database/repositories/plan-repository.ts`：新增 9 个 V7 查询方法（`getPlanByDate`、`getDraftPlanByDate`、`getTodayActivePlan`、`listPlansByRange`、`searchPlans`、`getPlansForMonth`、`getScheduledPlansForDate`、`getDraftPlanByScope`、`getActivePlanByScope`）和 3 个状态转换方法（`activatePlan`、`cancelPlan`、`completePlan`）。
+- `src/agent/graphs/proactive/state.ts`：`ProactiveType` 新增 `daily_plan`。
+- `src/agent/graphs/proactive/nodes/receive-event.ts`：新增 `daily_plan_due` 事件映射。
+- `src/main/integration.ts`：新增 `getCalendarMonth`、`getCalendarDate`、`handlePlanningMessageWithDate`、`activateTodayPlans` 方法。
+- `app/main.js`：新增 `calendar:get-month`、`calendar:get-date`、`calendar:open-planning` IPC handler。
+- `app/preload.js`：暴露 `getCalendarMonth`、`getCalendarDate`、`openPlanningWithDate` API。
+- `app/renderer.js`：新增日历面板（月视图、上月/下月/回到今天、状态标记、任务数量、详情展示、"在计划模式中编辑"/"为这一天制定计划"入口）。
+- `app/index.html`：新增 `#calendarToggle` 按钮和 `#calendarPanel` 面板结构。
+- `app/styles.css`：新增 `.calendar-panel`、`.calendar-grid`、`.calendar-detail` 等完整样式。
+
+### V7 Migration 字段说明
+
+- `plans.user_id`：用户 ID（scope 隔离）。
+- `plans.character_id`：角色 ID（scope 隔离）。
+- `plans.timezone`：创建时使用的时区（默认 `Asia/Shanghai`）。
+- `plans.activated_at`：scheduled → active 的激活时间。
+- `plans.completed_at`：全部任务完成时间。
+- `plans.cancelled_at`：取消时间。
+- 部分唯一索引 `idx_plans_live_unique_per_scope_date`：同一 user_id + character_id + date 只允许一个 live plan（draft/scheduled/active）。
+- 索引 `idx_plans_scope_date`：加速按 scope + date 查询。
+- 触发器 `trg_plans_status_check_insert / _update` 扩展：status 允许 `draft` / `scheduled` / `active` / `completed` / `cancelled` / `expired`。
+
+### V7 状态机
+
+- `draft`：草案（可被放弃/取消）。
+- `scheduled`：已确认的未来计划（到达日期后由 CalendarActivationService 转换）。
+- `active`：今天正在展示的计划（可在桌面气泡显示）。
+- `completed`：全部任务已完成。
+- `cancelled`：已取消（不再返回到 PlanMemoryRetriever）。
+- `expired`：已过期（保留历史，不删除）。
+
+### V7 日期校验规则
+
+- `validateTargetDate(targetDate, todayDate)`：返回 `future_date` / `today` / `past_date` 模式。
+- `future_date` 模式：08:00 即使早于当前时刻也合法。
+- `today` 模式：新增/修改任务不能早于当前时间。
+- `past_date` 模式：默认拒绝创建和修改（`allowPast=true` 时允许查看）。
+- `display_or_activation` 模式：不因部分任务时间已过去就拒绝整个计划。
+- 必须覆盖 23:59、00:00、跨月、跨年和闰年。
+
+### V7 IPC 清单
+
+- `calendar:get-month` — 获取月视图计划摘要（不调用模型）。
+- `calendar:get-date` — 获取指定日期的计划详情（不调用模型）。
+- `calendar:open-planning` — 以指定日期打开计划模式（预先设置 targetDate 和 planningThreadId）。
+- `planning:start` — 进入计划模式（V7 扩展支持 `targetDate`/`planningThreadId`）。
+- `planning:submit-message` / `planning:confirm` / `planning:toggle-task` — 沿用 V1/V5。
+
+### V7 工具循环上限
+
+- `MAX_READONLY_TOOL_LOOPS = 3`：只读工具最大循环次数。
+- `MAX_MODEL_CALLS_FOR_PLANNING = 3`：模型调用最大次数。
+- `MAX_GRAPH_ITERATIONS = 6`：Graph 节点迭代最大次数。
+
+
+
 ## 数据与隐私
 
 - API Key 存储在 Electron `userData` 下的 `api-config.json`，由 `app/main.js` 管理。

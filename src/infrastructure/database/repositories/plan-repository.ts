@@ -9,10 +9,26 @@
  * - 模型透明：resolved_model（别名解析值）+ response_model（API 返回的真实模型）
  * - 用户确认：user_confirmed 标记是否明确确认发布
  * - active 唯一约束：同一日期只允许一个 active 计划（数据库级）
+ *
+ * V7 日历扩展特性：
+ * - user_id / character_id 隔离：所有查询按 scope 隔离
+ * - 状态机扩展：draft / scheduled / active / completed / cancelled / expired
+ * - scheduled → active：每日激活服务原子转换
+ * - 按日期/范围/月份查询：支持日历视图
+ * - 内容搜索：支持 PlanMemoryRetriever
  */
 import { getDatabase, transaction } from '../connection';
 
-export type PlanStatus = 'draft' | 'active' | 'completed';
+export type PlanStatus = 'draft' | 'scheduled' | 'active' | 'completed' | 'cancelled' | 'expired';
+
+/** V2 旧状态类型（向后兼容） */
+export type LegacyPlanStatus = 'draft' | 'active' | 'completed';
+
+/** 计划查询 scope（用户 + 角色隔离） */
+export interface PlanScope {
+  userId: string;
+  characterId: string;
+}
 
 export interface PlanRow {
   id: string;
@@ -30,6 +46,18 @@ export interface PlanRow {
   response_model?: string | null;
   /** 用户是否明确确认发布（0/1） */
   user_confirmed?: number;
+  /** V7: 用户 ID */
+  user_id?: string;
+  /** V7: 角色 ID */
+  character_id?: string;
+  /** V7: 创建时使用的时区 */
+  timezone?: string;
+  /** V7: scheduled → active 的激活时间 */
+  activated_at?: string | null;
+  /** V7: 全部任务完成时间 */
+  completed_at?: string | null;
+  /** V7: 取消时间 */
+  cancelled_at?: string | null;
 }
 
 export interface PlanTaskRow {
@@ -56,6 +84,12 @@ export interface PlanInput {
   status: PlanStatus;
   resolved_model?: string | null;
   response_model?: string | null;
+  /** V7: 用户 ID（scope 隔离） */
+  user_id?: string;
+  /** V7: 角色 ID（scope 隔离） */
+  character_id?: string;
+  /** V7: 创建时使用的时区 */
+  timezone?: string;
 }
 
 /** 任务 patch 输入（所有字段可选，只更新提供的字段） */
@@ -71,14 +105,17 @@ export const planRepository = {
   /** 创建计划 */
   insert(plan: PlanInput): void {
     getDatabase().prepare(`
-      INSERT INTO plans (id, date, status, resolved_model, response_model)
-      VALUES (@id, @date, @status, @resolved_model, @response_model)
+      INSERT INTO plans (id, date, status, resolved_model, response_model, user_id, character_id, timezone)
+      VALUES (@id, @date, @status, @resolved_model, @response_model, @user_id, @character_id, @timezone)
     `).run({
       id: plan.id,
       date: plan.date,
       status: plan.status,
       resolved_model: plan.resolved_model ?? null,
-      response_model: plan.response_model ?? null
+      response_model: plan.response_model ?? null,
+      user_id: plan.user_id ?? '',
+      character_id: plan.character_id ?? '',
+      timezone: plan.timezone ?? 'Asia/Shanghai'
     });
   },
 
@@ -293,12 +330,14 @@ export const planRepository = {
   },
 
   /**
-   * 发布计划：将 draft 转为 active。
+   * 发布计划：将 draft 转为 active（今天）或 scheduled（未来日期）。
    * 要求 user_confirmed=1，否则拒绝发布。
    * 使用事务确保原子性：检查确认 → 更新状态。
    * 返回 true 表示发布成功。
+   *
+   * V7: 支持 scheduled 状态。未来日期计划确认后进入 scheduled，到达日期后由激活服务转为 active。
    */
-  publishPlan(id: string): boolean {
+  publishPlan(id: string, targetStatus: 'active' | 'scheduled' = 'active'): boolean {
     return transaction(() => {
       const plan = this.getById(id);
       if (!plan) return false;
@@ -306,8 +345,54 @@ export const planRepository = {
       if (plan.status !== 'draft') return false;
       const result = getDatabase().prepare(
         `UPDATE plans
-         SET status = 'active', lock_version = lock_version + 1, updated_at = datetime('now')
+         SET status = ?, lock_version = lock_version + 1, updated_at = datetime('now')
          WHERE id = ? AND status = 'draft' AND user_confirmed = 1`
+      ).run(targetStatus, id);
+      return result.changes > 0;
+    });
+  },
+
+  /**
+   * V7: 激活计划：scheduled → active。
+   * 由 CalendarActivationService 在到达日期后调用。
+   * 原子操作，设置 activated_at。
+   */
+  activatePlan(id: string): boolean {
+    return transaction(() => {
+      const result = getDatabase().prepare(
+        `UPDATE plans
+         SET status = 'active', activated_at = datetime('now'), lock_version = lock_version + 1, updated_at = datetime('now')
+         WHERE id = ? AND status = 'scheduled'`
+      ).run(id);
+      return result.changes > 0;
+    });
+  },
+
+  /**
+   * V7: 取消计划：draft/scheduled → cancelled。
+   * 不允许取消 active 或 completed 计划（需先完成或过期）。
+   */
+  cancelPlan(id: string): boolean {
+    return transaction(() => {
+      const result = getDatabase().prepare(
+        `UPDATE plans
+         SET status = 'cancelled', cancelled_at = datetime('now'), lock_version = lock_version + 1, updated_at = datetime('now')
+         WHERE id = ? AND status IN ('draft', 'scheduled')`
+      ).run(id);
+      return result.changes > 0;
+    });
+  },
+
+  /**
+   * V7: 完成计划：active → completed。
+   * 通常在所有任务完成后调用。
+   */
+  completePlan(id: string): boolean {
+    return transaction(() => {
+      const result = getDatabase().prepare(
+        `UPDATE plans
+         SET status = 'completed', completed_at = datetime('now'), lock_version = lock_version + 1, updated_at = datetime('now')
+         WHERE id = ? AND status = 'active'`
       ).run(id);
       return result.changes > 0;
     });
@@ -322,5 +407,190 @@ export const planRepository = {
       'SELECT resolved_model, response_model FROM plans WHERE id = ?'
     ).get(id) as { resolved_model: string | null; response_model: string | null } | undefined;
     return row ?? null;
+  },
+
+  // ===== V7 日历扩展查询方法（按 scope 隔离）=====
+
+  /**
+   * V7: 按日期获取计划（含任务）。返回该日期下最新的非取消计划。
+   */
+  getPlanByDate(scope: PlanScope, date: string): PlanWithTasks | null {
+    const plan = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND date = ? AND status != 'cancelled'
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(scope.userId, scope.characterId, date) as PlanRow | undefined;
+    if (!plan) return null;
+    const tasks = getDatabase().prepare(
+      'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+    ).all(plan.id) as PlanTaskRow[];
+    return { ...plan, tasks };
+  },
+
+  /**
+   * V7: 按日期获取草案计划。
+   */
+  getDraftPlanByDate(scope: PlanScope, date: string): PlanWithTasks | null {
+    const plan = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND date = ? AND status = 'draft'
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(scope.userId, scope.characterId, date) as PlanRow | undefined;
+    if (!plan) return null;
+    const tasks = getDatabase().prepare(
+      'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+    ).all(plan.id) as PlanTaskRow[];
+    return { ...plan, tasks };
+  },
+
+  /**
+   * V7: 获取今天的 active 计划。
+   */
+  getTodayActivePlan(scope: PlanScope, localDate: string): PlanWithTasks | null {
+    const plan = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND date = ? AND status = 'active'
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(scope.userId, scope.characterId, localDate) as PlanRow | undefined;
+    if (!plan) return null;
+    const tasks = getDatabase().prepare(
+      'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+    ).all(plan.id) as PlanTaskRow[];
+    return { ...plan, tasks };
+  },
+
+  /**
+   * V7: 按日期范围列出计划（含任务）。
+   * 用于日历月视图和范围查询。
+   */
+  listPlansByRange(scope: PlanScope, from: string, to: string): PlanWithTasks[] {
+    const plans = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND date >= ? AND date <= ? AND status != 'cancelled'
+       ORDER BY date ASC, updated_at DESC`
+    ).all(scope.userId, scope.characterId, from, to) as PlanRow[];
+    return plans.map(plan => {
+      const tasks = getDatabase().prepare(
+        'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+      ).all(plan.id) as PlanTaskRow[];
+      return { ...plan, tasks };
+    });
+  },
+
+  /**
+   * V7: 按任务内容搜索计划。
+   * 用于 PlanMemoryRetriever 和"我之前哪天安排了健身"等查询。
+   * 只搜索非取消的计划。
+   */
+  searchPlans(scope: PlanScope, query: string, range?: { from: string; to: string }): PlanWithTasks[] {
+    const queryParams: any[] = [scope.userId, scope.characterId, `%${query}%`];
+    let dateFilter = '';
+    if (range) {
+      dateFilter = ' AND date >= ? AND date <= ?';
+      queryParams.push(range.from, range.to);
+    }
+    const plans = getDatabase().prepare(
+      `SELECT DISTINCT p.* FROM plans p
+       INNER JOIN plan_tasks t ON t.plan_id = p.id
+       WHERE p.user_id = ? AND p.character_id = ? AND t.content LIKE ? AND p.status != 'cancelled'
+       ${dateFilter}
+       ORDER BY p.date DESC`
+    ).all(...queryParams) as PlanRow[];
+    return plans.map(plan => {
+      const tasks = getDatabase().prepare(
+        'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+      ).all(plan.id) as PlanTaskRow[];
+      return { ...plan, tasks };
+    });
+  },
+
+  /**
+   * V7: 获取月视图计划摘要。
+   * 返回指定月份每天的计划状态和任务数量。
+   * 不加载任务详情，仅返回摘要（用于月视图标记）。
+   */
+  getPlansForMonth(scope: PlanScope, year: number, month: number): Array<{
+    id: string;
+    date: string;
+    status: PlanStatus;
+    taskCount: number;
+    completedCount: number;
+  }> {
+    const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+    const rows = getDatabase().prepare(
+      `SELECT p.id, p.date, p.status,
+              COUNT(t.id) as task_count,
+              SUM(CASE WHEN t.completed = 1 THEN 1 ELSE 0 END) as completed_count
+       FROM plans p
+       LEFT JOIN plan_tasks t ON t.plan_id = p.id
+       WHERE p.user_id = ? AND p.character_id = ? AND p.date LIKE ? AND p.status != 'cancelled'
+       GROUP BY p.id
+       ORDER BY p.date ASC`
+    ).all(scope.userId, scope.characterId, `${monthStr}-%`) as Array<{
+      id: string;
+      date: string;
+      status: PlanStatus;
+      task_count: number;
+      completed_count: number;
+    }>;
+    return rows.map(r => ({
+      id: r.id,
+      date: r.date,
+      status: r.status,
+      taskCount: r.task_count,
+      completedCount: r.completed_count || 0
+    }));
+  },
+
+  /**
+   * V7: 获取指定日期需要激活的 scheduled 计划。
+   * 由 CalendarActivationService 调用。
+   */
+  getScheduledPlansForDate(scope: PlanScope, date: string): PlanWithTasks[] {
+    const plans = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND date = ? AND status = 'scheduled'
+       ORDER BY created_at ASC`
+    ).all(scope.userId, scope.characterId, date) as PlanRow[];
+    return plans.map(plan => {
+      const tasks = getDatabase().prepare(
+        'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+      ).all(plan.id) as PlanTaskRow[];
+      return { ...plan, tasks };
+    });
+  },
+
+  /**
+   * V7: 按 scope 获取当前草案（不限日期）。
+   * 向后兼容旧 getDraftPlan()，但按 scope 隔离。
+   */
+  getDraftPlanByScope(scope: PlanScope): PlanWithTasks | null {
+    const plan = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND status = 'draft'
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(scope.userId, scope.characterId) as PlanRow | undefined;
+    if (!plan) return null;
+    const tasks = getDatabase().prepare(
+      'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+    ).all(plan.id) as PlanTaskRow[];
+    return { ...plan, tasks };
+  },
+
+  /**
+   * V7: 按 scope 获取当前 active 计划（不限日期）。
+   * 向后兼容旧 getActivePlan()，但按 scope 隔离。
+   */
+  getActivePlanByScope(scope: PlanScope): PlanWithTasks | null {
+    const plan = getDatabase().prepare(
+      `SELECT * FROM plans
+       WHERE user_id = ? AND character_id = ? AND status = 'active'
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(scope.userId, scope.characterId) as PlanRow | undefined;
+    if (!plan) return null;
+    const tasks = getDatabase().prepare(
+      'SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY order_index'
+    ).all(plan.id) as PlanTaskRow[];
+    return { ...plan, tasks };
   }
 };

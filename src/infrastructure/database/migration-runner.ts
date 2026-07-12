@@ -457,8 +457,141 @@ const migrationV6: MigrationFile = {
   }
 };
 
+/**
+ * V7：跨日期日历计划 - 扩展 plans 表支持多日期、用户隔离和日历状态机。
+ *
+ * 新增列（幂等）：
+ * - user_id：用户隔离（回填自 app_settings.user_id）
+ * - character_id：角色隔离（回填自 app_settings.active_character_id）
+ * - timezone：创建时使用的时区（回填 'Asia/Shanghai'）
+ * - activated_at：scheduled → active 的激活时间
+ * - completed_at：全部任务完成时间
+ * - cancelled_at：取消时间
+ *
+ * 状态扩展：
+ * - draft（已有）
+ * - scheduled（新增：已确认的未来计划）
+ * - active（已有）
+ * - completed（已有）
+ * - cancelled（新增）
+ * - expired（新增：显式保留过期状态）
+ *
+ * 索引和触发器更新（幂等）：
+ * - 删除旧触发器 trg_plans_status_check_insert/_update
+ * - 创建新触发器支持 draft/scheduled/active/completed/cancelled/expired
+ * - 删除旧唯一索引 idx_plans_active_unique_per_date
+ * - 创建新唯一索引 idx_plans_live_unique_per_scope_date
+ *   （按 user_id + character_id + date 隔离，只限制 draft/scheduled/active）
+ *
+ * 回填策略：
+ * - 从 app_settings 读取 user_id 和 active_character_id
+ * - 旧数据 status 保持不变（draft/active/completed）
+ * - 处理旧数据冲突：同一 user_id + character_id + date 多个 live plan 时保留最新
+ */
+const migrationV7: MigrationFile = {
+  version: 7,
+  name: 'calendar_planning_extensions',
+  sql: '',
+  run(db: DatabaseType): void {
+    // 1. 添加新列（幂等）
+    addColumnIfNotExists(db, 'plans', 'user_id', "TEXT NOT NULL DEFAULT ''");
+    addColumnIfNotExists(db, 'plans', 'character_id', "TEXT NOT NULL DEFAULT ''");
+    addColumnIfNotExists(db, 'plans', 'timezone', "TEXT NOT NULL DEFAULT 'Asia/Shanghai'");
+    addColumnIfNotExists(db, 'plans', 'activated_at', 'TEXT');
+    addColumnIfNotExists(db, 'plans', 'completed_at', 'TEXT');
+    addColumnIfNotExists(db, 'plans', 'cancelled_at', 'TEXT');
+
+    // 2. 回填旧数据的 user_id 和 character_id
+    const userRow = db.prepare("SELECT value FROM app_settings WHERE key = 'user_id'").get() as { value: string } | undefined;
+    const charRow = db.prepare("SELECT value FROM app_settings WHERE key = 'active_character_id'").get() as { value: string } | undefined;
+    const defaultUserId = userRow?.value || 'default-user';
+    const defaultCharId = charRow?.value || 'default-character';
+
+    db.prepare("UPDATE plans SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(defaultUserId);
+    db.prepare("UPDATE plans SET character_id = ? WHERE character_id = '' OR character_id IS NULL").run(defaultCharId);
+
+    // 3. 处理旧数据冲突：同一 user_id + character_id + date 多个 live plan
+    // 保留 updated_at 最新的，其他标记为 cancelled
+    const conflicts = db.prepare(`
+      SELECT user_id, character_id, date, COUNT(*) as cnt
+      FROM plans
+      WHERE status IN ('draft', 'active')
+      GROUP BY user_id, character_id, date
+      HAVING cnt > 1
+    `).all() as Array<{ user_id: string; character_id: string; date: string; cnt: number }>;
+
+    for (const conflict of conflicts) {
+      // 保留最新的（updated_at 最大），其他标记为 cancelled
+      const duplicates = db.prepare(`
+        SELECT id FROM plans
+        WHERE user_id = ? AND character_id = ? AND date = ? AND status IN ('draft', 'active')
+        ORDER BY updated_at DESC
+      `).all(conflict.user_id, conflict.character_id, conflict.date) as Array<{ id: string }>;
+
+      // 跳过第一个（最新的），其余标记为 cancelled
+      for (let i = 1; i < duplicates.length; i++) {
+        db.prepare(
+          "UPDATE plans SET status = 'cancelled', cancelled_at = datetime('now') WHERE id = ?"
+        ).run(duplicates[i].id);
+      }
+    }
+
+    // 4. 删除旧触发器，创建新触发器（支持 scheduled/cancelled/expired）
+    db.exec('DROP TRIGGER IF EXISTS trg_plans_status_check_insert;');
+    db.exec('DROP TRIGGER IF EXISTS trg_plans_status_check_update;');
+    db.exec(`
+      CREATE TRIGGER trg_plans_status_check_insert
+      BEFORE INSERT ON plans
+      FOR EACH ROW
+      BEGIN
+        SELECT CASE
+          WHEN NEW.status NOT IN ('draft', 'scheduled', 'active', 'completed', 'cancelled', 'expired')
+          THEN RAISE(ABORT, 'Invalid plan status: must be draft, scheduled, active, completed, cancelled, or expired')
+        END;
+      END;
+    `);
+    db.exec(`
+      CREATE TRIGGER trg_plans_status_check_update
+      BEFORE UPDATE OF status ON plans
+      FOR EACH ROW
+      WHEN NEW.status IS NOT NULL
+      BEGIN
+        SELECT CASE
+          WHEN NEW.status NOT IN ('draft', 'scheduled', 'active', 'completed', 'cancelled', 'expired')
+          THEN RAISE(ABORT, 'Invalid plan status: must be draft, scheduled, active, completed, cancelled, or expired')
+        END;
+      END;
+    `);
+
+    // 5. 删除旧唯一索引，创建新唯一索引（按 user_id + character_id + date 隔离）
+    db.exec('DROP INDEX IF EXISTS idx_plans_active_unique_per_date;');
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_live_unique_per_scope_date
+      ON plans(user_id, character_id, date) WHERE status IN ('draft', 'scheduled', 'active');
+    `);
+
+    // 6. 添加日历查询索引（幂等）
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_plans_scope_date
+      ON plans(user_id, character_id, date, status);
+    `);
+
+    log.info('V7 calendar planning extensions applied', {
+      fields: {
+        addedColumns: ['user_id', 'character_id', 'timezone', 'activated_at', 'completed_at', 'cancelled_at'],
+        newStatuses: ['scheduled', 'cancelled', 'expired'],
+        indexes: ['idx_plans_live_unique_per_scope_date', 'idx_plans_scope_date'],
+        triggers: ['trg_plans_status_check_insert', 'trg_plans_status_check_update'],
+        conflictsResolved: conflicts.length,
+        defaultUserId,
+        defaultCharId
+      }
+    });
+  }
+};
+
 /** 所有已注册的 migration，按 version 升序 */
-const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6];
+const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7];
 
 /** 执行所有待执行的 migration */
 export function runMigrations(db: DatabaseType): { applied: number; currentVersion: number } {

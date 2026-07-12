@@ -1209,3 +1209,107 @@ export function setPlanningModel(modelId: string): { ok: boolean } {
   log.info('planning model configured', { fields: { modelId: trimmed } });
   return { ok: true };
 }
+
+// ===== 日历扩展 IPC 入口（V7）=====
+
+/**
+ * 获取月视图计划摘要。
+ * 供 main.js 的 calendar:get-month IPC 调用。
+ * 只返回指定月份每天的计划状态和任务数量，不加载任务详情。
+ * 切换月份不调用模型。
+ */
+export function getCalendarMonth(year: number, month: number): {
+  ok: boolean;
+  days?: Array<{ date: string; status: string; taskCount: number; completedCount: number }>;
+  reason?: string;
+} {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return { ok: false, reason: 'invalid-year-or-month' };
+  }
+  const userId = getUserId();
+  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const scope = { userId, characterId };
+  const days = planRepository.getPlansForMonth(scope, year, month);
+  return { ok: true, days };
+}
+
+/**
+ * 获取指定日期的计划详情。
+ * 供 main.js 的 calendar:get-date IPC 调用。
+ * 查看计划不调用模型。
+ * 返回该日期最新的非取消计划（含任务详情）。
+ */
+export function getCalendarDate(date: string): {
+  ok: boolean;
+  plan?: any | null;
+  reason?: string;
+} {
+  const dateStr = String(date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return { ok: false, reason: 'invalid-date-format' };
+  }
+  const userId = getUserId();
+  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const scope = { userId, characterId };
+  const plan = planRepository.getPlanByDate(scope, dateStr);
+  if (!plan) {
+    return { ok: true, plan: null };
+  }
+  return {
+    ok: true,
+    plan: toPlanDraft(
+      { id: plan.id, date: plan.date, tasks: plan.tasks },
+      plan.draft_version ?? 1
+    )
+  };
+}
+
+/**
+ * 处理带目标日期的 Planning 消息。
+ * 供 main.js 的 calendar:open-planning IPC 调用。
+ * 用于"为这一天制定计划"入口，预先设置 targetDate。
+ */
+export async function handlePlanningMessageWithDate(
+  userInput: string,
+  targetDate: string,
+  isConfirmation?: boolean
+): Promise<PlanningResponseDTO> {
+  if (!planningRunner) {
+    log.error('planning runner not initialized, call initNewArchitecture first');
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+
+  const userId = getUserId();
+  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+
+  return planningRunner.submitMessage({
+    userId,
+    characterId,
+    userInput,
+    isConfirmation,
+    targetDate,
+    planningThreadId: `date:${targetDate}`
+  });
+}
+
+/**
+ * 触发每日计划激活。
+ * 供 main.js 在应用启动时调用。
+ * 原子地将今天的 scheduled 计划转为 active，并写入幂等事件。
+ */
+export function activateTodayPlans(): {
+  ok: boolean;
+  activatedCount?: number;
+  reason?: string;
+} {
+  if (!timeService) {
+    return { ok: false, reason: 'time-service-not-ready' };
+  }
+  const { CalendarActivationService } = require('../services/CalendarActivationService');
+  const service = new CalendarActivationService(timeService);
+  const userId = getUserId();
+  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const scope = { userId, characterId };
+  const result = service.activateTodayPlans(scope);
+  return { ok: true, activatedCount: result.activatedPlans.length };
+}

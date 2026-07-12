@@ -40,7 +40,7 @@ function getDefaultMessage(action: { type?: string; clarificationQuestion?: stri
     case 'ask_clarification':
       return action.clarificationQuestion ?? '能再补充一下细节吗？';
     case 'create_draft':
-      return '好的，我为你生成了今日计划草案，请查看。';
+      return '好的，我为你生成了计划草案，请查看。';
     case 'patch_tasks':
       return '好的，我已经调整了任务安排。';
     case 'delete_task':
@@ -51,6 +51,13 @@ function getDefaultMessage(action: { type?: string; clarificationQuestion?: stri
       return '草案已就绪，确认发布吗？';
     case 'publish_plan':
       return '好的，正在为你发布计划。';
+    case 'cancel_plan':
+      return '好的，已经取消该计划。';
+    case 'get_plan_by_date':
+    case 'list_plans_by_range':
+    case 'search_plans':
+    case 'get_calendar_month':
+      return '好的，正在查询计划信息。';
     default:
       return '好的。';
   }
@@ -72,8 +79,24 @@ function buildSystemPrompt(state: PlanningStateType): string {
 
   // 包含任务 ID 和 order_index，供 patch_tasks / delete_task 引用
   const draftInfo = draft && draft.tasks.length > 0
-    ? `当前草案（版本 ${draft.draftVersion}）：\n${draft.tasks.map((t, i) => `${i + 1}. [id=${t.id}] ${t.start_time}-${t.end_time} ${t.content}`).join('\n')}`
+    ? `当前草案（版本 ${draft.draftVersion}，日期 ${draft.date}）：\n${draft.tasks.map((t, i) => `${i + 1}. [id=${t.id}] ${t.start_time}-${t.end_time} ${t.content}`).join('\n')}`
     : '当前没有草案';
+
+  // 日历扩展：目标日期上下文
+  const targetDateInfo = state.targetDate
+    ? `\n目标日期：${state.targetDate}（模式：${state.targetDateMode || 'today'}）`
+    : '';
+  const todayPlanInfo = state.todayPlan
+    ? `\n今天的计划（状态：${state.todayPlan.status}）：\n${state.todayPlan.tasks.map((t, i) => `${i + 1}. ${t.start_time ?? '??:??'}-${t.end_time ?? '??:??'} ${t.content}`).join('\n')}`
+    : '\n今天没有已发布的计划';
+  const selectedPlanInfo = state.selectedPlan && state.selectedPlan !== state.todayPlan
+    ? `\n目标日期的计划（状态：${state.selectedPlan.status}，ID：${state.selectedPlan.id}）：\n${state.selectedPlan.tasks.map((t, i) => `${i + 1}. ${t.start_time ?? '??:??'}-${t.end_time ?? '??:??'} ${t.content}`).join('\n')}`
+    : '';
+
+  // 日历扩展：只读工具返回的结果
+  const toolResultInfo = state.toolResult
+    ? `\n上次工具查询结果：\n${state.toolResult}\n请根据以上查询结果选择下一步动作。`
+    : '';
 
   // 阶段提示：让模型知道当前是否处于 awaiting_confirmation
   const phaseHint = state.awaitingConfirmation
@@ -85,17 +108,22 @@ function buildSystemPrompt(state: PlanningStateType): string {
 当前上下文：
 ${timeInfo}
 ${userInfo}
-${draftInfo}${phaseHint}
+${draftInfo}${targetDateInfo}${todayPlanInfo}${selectedPlanInfo}${toolResultInfo}${phaseHint}
 
 你可以选择以下动作之一（输出严格 JSON，不要包裹在 markdown 代码块中）：
 
-1. ask_clarification - 当用户目标模糊时，询问关键问题（如具体时间、优先级）。信息充分时不要追问。
-2. create_draft - 信息充分时，创建计划草案（首次或完全重建）
-3. patch_tasks - 局部修改任务（如"把第二项推迟半小时"、"下午不要太满"）。使用 patches 数组，每项含 id 字段引用任务。
+1. ask_clarification - 当用户目标模糊时，询问关键问题（如具体时间、优先级）。信息充分时不要追问。日期不明确时（如"月底"、"有空时"）必须追问。
+2. create_draft - 信息充分时，创建计划草案（首次或完全重建）。必须设置 target_date（YYYY-MM-DD）。
+3. patch_tasks - 局部修改任务（如"把第二项推迟半小时"、"下午不要太满"）。使用 patches 数组，每项含 id 字段引用任务。修改指定计划时设置 planId。
 4. delete_task - 删除单个任务（如"删除代码审查"）。使用 taskId 字段引用任务 ID。
 5. add_task - 添加新任务到已有草案。新任务时间必须与现有任务不冲突。
 6. request_confirmation - 草案完成后请求用户确认
 7. publish_plan - 用户明确确认后发布计划（仅当用户说"就这样"等明确确认词时）
+8. cancel_plan - 取消未来计划（draft/scheduled 状态）。通过 planId 指定要取消的计划。
+9. get_plan_by_date - 查询指定日期的计划。设置 target_date（YYYY-MM-DD）。
+10. list_plans_by_range - 查询日期范围内的计划。设置 startDate 和 endDate（YYYY-MM-DD）。
+11. search_plans - 按关键词搜索计划（如"健身"、"论文大纲"）。设置 query。
+12. get_calendar_month - 查看月历概览。设置 year 和 month（1-12）。
 
 规则：
 - 模糊目标会先询问关键问题，不直接编造时间表
@@ -104,11 +132,16 @@ ${draftInfo}${phaseHint}
 - "把第二项推迟半小时"只修改目标任务，不影响其他任务
 - "删除代码审查"不会改变其他任务
 - "下午不要排太满"等语义修改：保留主要目标和顺序，合理拉长任务间隔或缩短任务时长增加缓冲
-- 添加任务时：在现有任务之间或之后寻找不冲突的时间段；如果用户指定的时间与现有任务冲突，先解释冲突并提出调整方案（如推迟新任务或缩短时长），不要直接覆盖现有任务
-- 当前时间之后才允许安排未开始任务
+- 添加任务时：在现有任务之间或之后寻找不冲突的时间段；如果用户指定的时间与现有任务冲突，先解释冲突并提出调整方案
+- 今天计划：当前时间之后才允许安排未开始任务
+- 未来计划：08:00 即使早于当前时刻也合法
+- 过去日期：允许查看，禁止新建和修改
 - 每个任务必须带开始时间和结束时间（HH:MM 格式）
 - 任务数量 3-6 个，时间段不重叠
 - 任务要具体可执行
+- 当用户提到"明天"、"下周三"、"7月20日"等日期时，基于当前时间计算 target_date
+- 不明确的日期表达（如"月底"、"有空时"、"以后某天"）必须追问
+- 只读工具（get_plan_by_date 等）执行后可以继续选择写工具（如 patch_tasks）
 - 每轮只输出一个动作，不要在 message 中编造未写入 tasks/patches 的内容
 
 输出格式（严格 JSON）：
@@ -120,6 +153,14 @@ ${draftInfo}${phaseHint}
   "taskId": "要删除的任务ID",
   "taskIndex": 1,
   "newTask": {"start_time": "11:00", "end_time": "12:00", "content": "新任务内容"},
+  "target_date": "2026-07-20",
+  "source_date_text": "明天",
+  "planId": "要修改/取消的计划ID",
+  "query": "搜索关键词",
+  "startDate": "2026-07-01",
+  "endDate": "2026-07-31",
+  "year": 2026,
+  "month": 7,
   "message": "你对用户说的话"
 }`;
 }
@@ -249,6 +290,14 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
       ...state.messages.map(m => ({ role: m.role, content: m.content }))
     ];
 
+    // 日历扩展：如果只读工具返回了结果，注入到模型上下文
+    if (state.toolResult && state.lastToolWasReadonly) {
+      modelMessages.push({
+        role: 'user',
+        content: `工具查询结果：\n${state.toolResult}\n\n请根据以上结果选择下一步动作。`
+      });
+    }
+
     if (state.lastToolError) {
       // 注入上一次工具错误信息，让模型知道什么失败了
       modelMessages.push({ role: 'user', content: userMessage });
@@ -260,7 +309,8 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
         role: 'user',
         content: '上一次操作失败了，请根据错误信息修正并重新选择动作。不要重复完全相同的动作。'
       });
-    } else {
+    } else if (!state.toolResult || !state.lastToolWasReadonly) {
+      // 只在没有 toolResult 注入时才添加 user message（避免重复）
       modelMessages.push({ role: 'user', content: userMessage });
     }
 

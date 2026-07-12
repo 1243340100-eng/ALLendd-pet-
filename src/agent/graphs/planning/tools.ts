@@ -125,8 +125,50 @@ export const agentActionSchema = z.object({
   { message: '动作缺少必填字段' }
 );
 
+/**
+ * 根据动作类型生成默认消息（共享函数）。
+ * 当模型输出缺少 message 字段时使用。
+ * v4-pro 等模型在复杂场景下可能不输出 message 字段。
+ */
+export function getDefaultMessageForAction(action: { type?: string; clarificationQuestion?: string }): string {
+  switch (action.type) {
+    case 'ask_clarification':
+      return action.clarificationQuestion ?? '能再补充一下细节吗？';
+    case 'create_draft':
+      return '好的，我为你生成了计划草案，请查看。';
+    case 'patch_tasks':
+      return '好的，我已经调整了任务安排。';
+    case 'delete_task':
+      return '好的，已经删除了指定任务。';
+    case 'add_task':
+      return '好的，已经添加了新任务。';
+    case 'request_confirmation':
+      return '草案已就绪，确认发布吗？';
+    case 'publish_plan':
+      return '好的，正在为你发布计划。';
+    case 'cancel_plan':
+      return '好的，已经取消该计划。';
+    case 'get_plan_by_date':
+    case 'list_plans_by_range':
+    case 'search_plans':
+    case 'get_calendar_month':
+      return '好的，正在查询计划信息。';
+    default:
+      return '好的。';
+  }
+}
+
 /** 校验模型输出的动作 JSON */
 export function validateAgentAction(parsed: unknown): { valid: boolean; action?: AgentAction; error?: string } {
+  // V7 修复：双重保险 — 在 Zod 校验前确保 message 字段存在且为非空字符串。
+  // agent-decide.ts 已有预处理，此处兜底防止边缘情况（如 parsed 来自不同路径）。
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const parsedObj = parsed as Record<string, unknown>;
+    if (typeof parsedObj.message !== 'string' || (parsedObj.message as string).trim().length === 0) {
+      const defaultMsg = getDefaultMessageForAction(parsedObj as { type?: string; clarificationQuestion?: string });
+      parsedObj.message = defaultMsg;
+    }
+  }
   const result = agentActionSchema.safeParse(parsed);
   if (!result.success) {
     const errorMsg = result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ');
@@ -409,9 +451,17 @@ export function executePlanningTool(
     currentTimeMinute: number;
     /** V7: scope 隔离 — create_draft 写入 plans 时使用 */
     scope?: PlanScope;
+    /** V7: 目标日期模式 — future_date 模式跳过"早于当前时间"校验 */
+    targetDateMode?: TargetDateMode;
   }
 ): { success: boolean; draft?: PlanDraft; error?: string; published?: boolean } {
   const { planId, date, currentDraft, userConfirmed, currentTimeHour, currentTimeMinute, scope } = context;
+  /** 解析校验模式：缺省时按 today 校验（向后兼容） */
+  const validationMode: PlanValidationMode = context.targetDateMode ?? 'today';
+  /** today 模式才传当前时间（用于"早于当前时间"校验）；future_date 等模式不传 */
+  const validationOptions = validationMode === 'today'
+    ? { currentTimeHour, currentTimeMinute }
+    : {};
 
   switch (action.type) {
     case 'ask_clarification': {
@@ -422,10 +472,11 @@ export function executePlanningTool(
 
     case 'create_draft': {
       // 修复 1：写入+校验在同一事务中完成，校验失败 throw 回滚
+      // V7 修复：按 targetDateMode 校验，future_date 模式不应用"早于当前时间"规则
       try {
         const draft = transaction(() => {
-          // 先校验输入
-          const inputValidation = validatePlanDraft(action.tasks!, currentTimeHour, currentTimeMinute);
+          // 先校验输入（按目标日期模式选择校验规则）
+          const inputValidation = validatePlanDraftByMode(action.tasks!, validationMode, validationOptions);
           if (!inputValidation.valid) {
             throw new Error(inputValidation.error);
           }
@@ -453,9 +504,9 @@ export function executePlanningTool(
           }));
           planRepository.insertTasks(tasks);
 
-          // 写入后重新读取并校验完整草案
+          // 写入后重新读取并校验完整草案（按目标日期模式）
           const updatedTasks = planRepository.getTasksByPlanId(planId);
-          const postValidation = validatePlanDraft(updatedTasks, currentTimeHour, currentTimeMinute);
+          const postValidation = validatePlanDraftByMode(updatedTasks, validationMode, validationOptions);
           if (!postValidation.valid) {
             throw new Error(`写入后校验失败: ${postValidation.error}`);
           }
@@ -497,9 +548,9 @@ export function executePlanningTool(
             throw new Error('部分任务修改失败，已回滚');
           }
 
-          // patch 后校验整个草案 — 在同一事务内，校验失败会回滚写入
+          // patch 后校验整个草案 — 在同一事务内，校验失败会回滚写入（按目标日期模式）
           const updatedTasks = planRepository.getTasksByPlanId(planId);
-          const draftValidation = validatePlanDraft(updatedTasks, currentTimeHour, currentTimeMinute);
+          const draftValidation = validatePlanDraftByMode(updatedTasks, validationMode, validationOptions);
           if (!draftValidation.valid) {
             throw new Error(`修改后校验失败: ${draftValidation.error}`);
           }
@@ -557,10 +608,13 @@ export function executePlanningTool(
       }
       try {
         // 修复 1：写入+校验在同一事务中完成，校验失败 throw 回滚
+        // V7 修复：future_date 模式跳过"早于当前时间"校验
         const result = transaction(() => {
-          const timeCheck = validateTaskTimesNotPast([action.newTask!], currentTimeHour, currentTimeMinute);
-          if (!timeCheck.valid) {
-            throw new Error(timeCheck.error);
+          if (validationMode === 'today') {
+            const timeCheck = validateTaskTimesNotPast([action.newTask!], currentTimeHour, currentTimeMinute);
+            if (!timeCheck.valid) {
+              throw new Error(timeCheck.error);
+            }
           }
           const maxOrder = Math.max(-1, ...currentDraft.tasks.map(t => t.order_index));
           const newTaskId = generateTaskId(planId);
@@ -572,9 +626,9 @@ export function executePlanningTool(
             order_index: maxOrder + 1
           });
 
-          // add 后校验整个草案 — 在同一事务内，校验失败会回滚写入
+          // add 后校验整个草案 — 在同一事务内，校验失败会回滚写入（按目标日期模式）
           const updatedTasks = planRepository.getTasksByPlanId(planId);
-          const draftValidation = validatePlanDraft(updatedTasks, currentTimeHour, currentTimeMinute);
+          const draftValidation = validatePlanDraftByMode(updatedTasks, validationMode, validationOptions);
           if (!draftValidation.valid) {
             throw new Error(`添加后校验失败: ${draftValidation.error}`);
           }
@@ -608,7 +662,10 @@ export function executePlanningTool(
         return { success: false, error: '没有当前草案，无法发布' };
       }
       // 修复 3：publish 前必须重新校验整个计划
-      const publishValidation = validatePlanDraft(currentDraft.tasks, currentTimeHour, currentTimeMinute);
+      // V7 修复：按目标日期模式校验
+      // - today 模式：任务不能是过去时间（保持原有行为，测试 26 期望）
+      // - future_date 模式：不检查过去时间（未来日期的计划可以包含任意时间）
+      const publishValidation = validatePlanDraftByMode(currentDraft.tasks, validationMode, validationOptions);
       if (!publishValidation.valid) {
         return { success: false, error: `发布前校验失败: ${publishValidation.error}` };
       }

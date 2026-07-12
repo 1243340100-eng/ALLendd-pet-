@@ -12,7 +12,7 @@ import type { PlanningStateType } from '../state';
 import type { ModelGateway } from '../../../../services/ModelGateway';
 import { MODEL_ALIAS } from '../../../../shared/constants';
 import { getDefaultAppConfig, applyUserModelAliases, resolveModelName } from '../../../../infrastructure/config/config-loader';
-import { validateAgentAction } from '../tools';
+import { validateAgentAction, getDefaultMessageForAction } from '../tools';
 import { settingsRepository } from '../../../../infrastructure/database/repositories/settings-repository';
 import { createLogger } from '../../../../infrastructure/logging/logger';
 import { sanitizePlanningTraceText } from '../sanitize';
@@ -34,34 +34,9 @@ export function isConfirmationInput(input: string): boolean {
 /**
  * 根据动作类型生成默认消息。
  * 当模型输出缺少 message 字段时使用（v4-pro 在 patch_tasks 等复杂场景下可能缺失）。
+ * V7：已提取为共享函数 getDefaultMessageForAction（tools.ts），此处保留别名兼容。
  */
-function getDefaultMessage(action: { type?: string; clarificationQuestion?: string }): string {
-  switch (action.type) {
-    case 'ask_clarification':
-      return action.clarificationQuestion ?? '能再补充一下细节吗？';
-    case 'create_draft':
-      return '好的，我为你生成了计划草案，请查看。';
-    case 'patch_tasks':
-      return '好的，我已经调整了任务安排。';
-    case 'delete_task':
-      return '好的，已经删除了指定任务。';
-    case 'add_task':
-      return '好的，已经添加了新任务。';
-    case 'request_confirmation':
-      return '草案已就绪，确认发布吗？';
-    case 'publish_plan':
-      return '好的，正在为你发布计划。';
-    case 'cancel_plan':
-      return '好的，已经取消该计划。';
-    case 'get_plan_by_date':
-    case 'list_plans_by_range':
-    case 'search_plans':
-    case 'get_calendar_month':
-      return '好的，正在查询计划信息。';
-    default:
-      return '好的。';
-  }
-}
+const getDefaultMessage = getDefaultMessageForAction;
 
 /** 构建 system prompt */
 function buildSystemPrompt(state: PlanningStateType): string {
@@ -367,17 +342,26 @@ export function createAgentDecideNode(deps: { modelGateway: ModelGateway }) {
     // 解析模型输出的 JSON
     let parsed: unknown;
     try {
-      parsed = typeof result.parsed === 'object' ? result.parsed : JSON.parse(result.content);
+      parsed = typeof result.parsed === 'object' && result.parsed !== null
+        ? result.parsed
+        : JSON.parse(result.content);
     } catch {
-      // 处理可能的 markdown 代码块包裹
+      // 处理可能的 markdown 代码块包裹或前后多余文本
       let cleaned = result.content.trim();
+      // 去除 markdown 代码块
       if (cleaned.startsWith('```')) {
         cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
-        try {
-          parsed = JSON.parse(cleaned);
-        } catch {
-          parsed = undefined;
-        }
+      }
+      // 尝试提取第一个 { 到最后一个 } 之间的内容（模型可能在 JSON 前后加了说明文字）
+      const firstBrace = cleaned.indexOf('{');
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+      }
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch {
+        parsed = undefined;
       }
     }
 

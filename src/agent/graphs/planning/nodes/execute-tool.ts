@@ -172,6 +172,7 @@ export function createExecuteToolNode() {
     }
 
     // 执行 Planning Tool（Zod 校验已在 agent_decide 完成，此处执行写操作）
+    // V7 修复：传入 targetDateMode，让 create_draft/patch_tasks/add_task 按 future_date 模式校验
     const result = executePlanningTool(action, {
       planId,
       date,
@@ -179,7 +180,8 @@ export function createExecuteToolNode() {
       userConfirmed: state.userConfirmed,
       currentTimeHour,
       currentTimeMinute,
-      scope: { userId: state.userId, characterId: state.characterId }
+      scope: { userId: state.userId, characterId: state.characterId },
+      targetDateMode: (state.targetDateMode || undefined) as import('../tools').TargetDateMode | undefined
     });
 
     if (!result.success) {

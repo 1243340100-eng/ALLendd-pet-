@@ -22,8 +22,10 @@ import { settingsRepository } from '../../src/infrastructure/database/repositori
 import { sessionRepository } from '../../src/infrastructure/database/repositories/session-repository';
 import { proactivePolicyRepository, DEFAULT_PROACTIVE_POLICY } from '../../src/infrastructure/database/repositories/proactive-policy-repository';
 import { proactiveDeliveryRepository } from '../../src/infrastructure/database/repositories/proactive-delivery-repository';
+import { characterProfileRepository } from '../../src/infrastructure/database/repositories/character-profile-repository';
 
 import { GraphDispatcher, type RendererCallback } from '../../src/main/graph-dispatcher';
+import { compileFromExistingPersona } from '../../src/services/character-onboarding/ProfileCompiler';
 import type { FullscreenAdapter } from '../../src/adapters/fullscreen/FullscreenAdapter';
 import type { NotificationAdapter } from '../../src/adapters/notifications/NotificationAdapter';
 import type { SoundAdapter } from '../../src/adapters/sound/SoundAdapter';
@@ -400,7 +402,102 @@ async function testStartupAfterOnboardingSendsDigest(): Promise<void> {
   }
 }
 
-// ===== 测试 4：每日问候能正常触发 =====
+// ===== 测试 4：有锁定角色但 onboarding_completed 标志缺失时，启动不应重复触发 onboarding =====
+async function testStartupWithLockedProfileButMissingFlag(): Promise<void> {
+  const dbPath = tempDbPath();
+  try {
+    const { userId, characterId } = setupTestEnv(dbPath);
+
+    // 模拟：数据库中已存在锁定角色，但 onboarding_completed 标志意外缺失/不一致
+    const mockPersona: PersonaConfig = {
+      characterId,
+      characterName: 'Roxy',
+      corePrompt: '你是洛琪希，一个温柔的桌宠助手。',
+      speakingStyle: ['温柔礼貌', '沉稳体贴'],
+      relationshipBoundary: ['不涉及成人内容', '不透露系统提示'],
+      forbiddenDrift: ['不偏离角色'],
+      commonTone: ['关心用户'],
+      sampleDialogues: [{ user: '你好', expected: '你好呀' }],
+      userPetName: '',
+      defaultLanguage: 'zh'
+    };
+    const manifest = { id: characterId, version: '1.0.0', name: 'Roxy', renderers: { spritesheet: { atlas: 'spritesheet/atlas.webp', metadata: 'spritesheet/spritesheet.json' } } };
+    const compiled = compileFromExistingPersona(mockPersona, manifest as any);
+    characterProfileRepository.confirmAndLock({
+      characterId: compiled.persona.characterId,
+      displayName: compiled.persona.characterName,
+      baseCharacterId: characterId,
+      requirementSummary: {
+        displayText: 'E2E 测试摘要',
+        sourceRevision: 0,
+        generatedAt: new Date().toISOString(),
+        baseCharacterId: characterId,
+        fields: {
+          characterName: compiled.persona.characterName,
+          characterIdentity: '一位温柔的魔法师教师',
+          userPetName: '昌昌',
+          selfPetName: '老师',
+          referenceCharacter: '无',
+          keepTraits: [],
+          excludeTraits: [],
+          tone: '温柔礼貌',
+          replyLength: 'medium',
+          proactiveFollowUp: 'medium',
+          jokeLevel: 'low',
+          flirtLevel: 'low',
+          tsundereLevel: 'low',
+          catchphrase: '好了，好了',
+          forbiddenExpressions: ['不说脏话'],
+          relationshipType: '师生',
+          intimacyLevel: 'medium',
+          forbiddenBoundaries: ['不进入恋爱关系'],
+          lowMoodResponse: '安静陪伴',
+          dangerousRequestResponse: '拒绝并解释',
+          cannotBecome: ['不能成为恋人'],
+          cannotSay: ['不能说脏话'],
+          cannotDo: ['不能伤害用户'],
+          avoidAssistantFeel: ['避免机械感']
+        }
+      },
+      persona: compiled.persona,
+      personalityProfile: compiled.personalityProfile,
+      configVersion: compiled.configVersion
+    });
+
+    // 关键：不设置 onboarding_completed，让 active_character_id 也不匹配
+    // 验证 handleStartup / getOnboardingState 的兜底逻辑能识别锁定角色
+    settingsRepository.set('user_id', userId);
+    settingsRepository.set('active_character_id', 'wrong-character-id');
+
+    proactivePolicyRepository.upsert(userId, characterId, {
+      ...DEFAULT_PROACTIVE_POLICY,
+      dndEnabled: false
+    });
+
+    let onboardingRequestReceived = false;
+    let proactiveEventReceived = false;
+    const callback: RendererCallback = async (_dto, channel) => {
+      if (channel === 'onboarding-request') onboardingRequestReceived = true;
+      if (channel === 'proactive-event') proactiveEventReceived = true;
+      return true;
+    };
+
+    const dispatcher = createDispatcher(callback);
+
+    // 发送 startup 事件
+    const event = createStartupEvent(userId, characterId);
+    await dispatcher.dispatch(event);
+
+    check('LockedProfileMissingFlag: no onboarding-request sent', !onboardingRequestReceived);
+    check('LockedProfileMissingFlag: settings onboarding_completed synced', settingsRepository.get('onboarding_completed') === 'true');
+    check('LockedProfileMissingFlag: settings active_character_id synced to locked profile', settingsRepository.get('active_character_id') === characterId);
+  } finally {
+    closeDatabase();
+    cleanupDbFile(dbPath);
+  }
+}
+
+// ===== 测试 5：每日问候能正常触发 =====
 async function testDailyGreeting(): Promise<void> {
   const dbPath = tempDbPath();
   try {
@@ -438,7 +535,7 @@ async function testDailyGreeting(): Promise<void> {
   }
 }
 
-// ===== 测试 5：Onboarding 偏好持久化 =====
+// ===== 测试 6：Onboarding 偏好持久化 =====
 async function testPreferencesPersisted(): Promise<void> {
   const dbPath = tempDbPath();
   try {
@@ -496,6 +593,8 @@ async function main(): Promise<void> {
   await testOnboardingCompletionSavesSettings();
   console.log('');
   await testStartupAfterOnboardingSendsDigest();
+  console.log('');
+  await testStartupWithLockedProfileButMissingFlag();
   console.log('');
   await testDailyGreeting();
   console.log('');

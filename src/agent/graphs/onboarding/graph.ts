@@ -1,29 +1,39 @@
 /**
- * OnboardingGraph 定义。
- * 对应架构计划第 5.1 节。
+ * OnboardingGraph 定义（V8 重构版）。
  *
  * 流程：
  * load_installation_state
  * → validate_character_pack
- * → collect_user_preferences
- * → build_persona_config
- * → configure_proactive_policy
- * → configure_model_mode
- * → save_onboarding_result
- * → activate_character
- * → finish
+ * → load_checkpoint
+ * → [userAction=answer] extract_answer → merge_draft → validate_coverage
+ * → [userAction=start/feedback/confirm] determine_stage
+ * → generate_questions (END, awaiting user input)
+ *   或 build_summary → review (END, awaiting user confirmation)
+ *   或 compile_profile → configure_proactive_policy
+ *     → configure_model_mode → persist_and_lock → activate_character → finish
+ *
+ * 每次 IPC 只执行一轮 Graph，不在内存中长期等待用户输入。
+ * SQLite checkpoint 是权威来源。
  */
 import { StateGraph, START, END } from '@langchain/langgraph';
 import { OnboardingState } from './state';
-import type { OnboardingStateType, OnboardingStateUpdate, UserPreferences } from './state';
-import { CharacterPackManager } from '../../../services/CharacterPackManager';
+import type { OnboardingStateType, OnboardingStateUpdate } from './state';
+import type { CharacterPackManager } from '../../../services/CharacterPackManager';
+import type { ModelGateway } from '../../../services/ModelGateway';
 import { loadInstallationState } from './nodes/load-installation-state';
 import { createValidateCharacterPackNode } from './nodes/validate-character-pack';
-import { collectUserPreferences, applyUserPreferences } from './nodes/collect-user-preferences';
-import { buildPersonaConfig } from './nodes/build-persona-config';
+import { loadCheckpoint } from './nodes/load-checkpoint';
+import { determineStage } from './nodes/determine-stage';
+import { createGenerateQuestionsNode } from './nodes/generate-questions';
+import { createExtractAnswerNode } from './nodes/extract-answer';
+import { mergeDraft } from './nodes/merge-draft';
+import { validateCoverageNode } from './nodes/validate-coverage';
+import { buildSummaryNode } from './nodes/build-summary';
+import { review } from './nodes/review';
+import { compileProfileNode } from './nodes/compile-profile';
+import { persistAndLock } from './nodes/persist-and-lock';
 import { configureProactivePolicy } from './nodes/configure-proactive-policy';
 import { configureModelMode } from './nodes/configure-model-mode';
-import { saveOnboardingResult } from './nodes/save-onboarding-result';
 import { activateCharacter } from './nodes/activate-character';
 import { finish } from './nodes/finish';
 import { createLogger } from '../../../infrastructure/logging/logger';
@@ -31,118 +41,269 @@ import { createLogger } from '../../../infrastructure/logging/logger';
 const log = createLogger('OnboardingGraph');
 
 /** 创建 OnboardingGraph */
-export function createOnboardingGraph(packManager: CharacterPackManager) {
+export function createOnboardingGraph(
+  packManager: CharacterPackManager,
+  gateway: ModelGateway
+) {
   const validateCharacterPack = createValidateCharacterPackNode(packManager);
+  const extractAnswerNode = createExtractAnswerNode(gateway);
+  const generateQuestionsNode = createGenerateQuestionsNode(gateway);
 
   const graph = new StateGraph(OnboardingState)
     .addNode('load_installation_state', loadInstallationState)
     .addNode('validate_character_pack', validateCharacterPack)
-    .addNode('collect_user_preferences', collectUserPreferences)
-    .addNode('build_persona_config', buildPersonaConfig)
+    .addNode('load_checkpoint', loadCheckpoint)
+    .addNode('determine_stage', determineStage)
+    .addNode('generate_questions', generateQuestionsNode)
+    .addNode('extract_answer', extractAnswerNode)
+    .addNode('merge_draft', mergeDraft)
+    .addNode('validate_coverage', validateCoverageNode)
+    .addNode('build_summary', buildSummaryNode)
+    .addNode('review', review)
+    .addNode('compile_profile', compileProfileNode)
+    .addNode('persist_and_lock', persistAndLock)
     .addNode('configure_proactive_policy', configureProactivePolicy)
     .addNode('configure_model_mode', configureModelMode)
-    .addNode('save_onboarding_result', saveOnboardingResult)
     .addNode('activate_character', activateCharacter)
     .addNode('finish', finish)
+
+    // START → load_installation_state
     .addEdge(START, 'load_installation_state')
-    .addEdge('load_installation_state', 'validate_character_pack')
-    // 条件边：validate_character_pack 失败（errors 或 characterId 为空）时直接结束
+
+    // load_installation_state → finish (已完成) | validate_character_pack
+    .addConditionalEdges('load_installation_state', (state) => {
+      if (state.currentStep === 'finish') return 'finish';
+      return 'validate_character_pack';
+    }, {
+      finish: 'finish',
+      validate_character_pack: 'validate_character_pack'
+    })
+
+    // validate_character_pack → END (失败) | load_checkpoint
     .addConditionalEdges('validate_character_pack', (state) => {
-      if (state.errors.length > 0 || !state.characterId) {
-        return 'fail';
-      }
+      if (state.errors.length > 0 || !state.characterId) return 'fail';
       return 'continue';
     }, {
       fail: END,
-      continue: 'collect_user_preferences'
+      continue: 'load_checkpoint'
     })
-    // 条件边：collect_user_preferences 之后，如果 awaitingUserInput=true 则结束（等待用户输入），
-    // 否则继续 build_persona_config
-    .addConditionalEdges('collect_user_preferences', (state) => {
-      if (state.awaitingUserInput) {
-        return 'await_input';
+
+    // load_checkpoint → finish (error/stale-revision) | extract_answer (answer/feedback) | determine_stage
+    // B1: stale revision 或其他错误状态必须直接结束，不进入 extract_answer/determine_stage
+    // P1: feedback + targetStage → determine_stage（确定性地路由到 generate_questions，不调用模型）
+    .addConditionalEdges('load_checkpoint', (state) => {
+      if (state.currentStep === 'finish' || state.phase === 'error') {
+        return 'finish';
       }
-      return 'continue';
+      if (state.userAction === 'answer' && state.draft !== null) {
+        return 'extract_answer';
+      }
+      if (state.userAction === 'feedback' && state.draft !== null) {
+        // targetStage 存在时走确定性路径（determine_stage → generate_questions）
+        // targetStage 不存在时走模型提取路径（extract_answer → merge_draft → validate_coverage）
+        if (state.targetStage !== null) {
+          return 'determine_stage';
+        }
+        return 'extract_answer';
+      }
+      return 'determine_stage';
+    }, {
+      finish: 'finish',
+      extract_answer: 'extract_answer',
+      determine_stage: 'determine_stage'
+    })
+
+    // determine_stage → compile_profile | build_summary | generate_questions | finish
+    .addConditionalEdges('determine_stage', (state) => {
+      switch (state.currentStep) {
+        case 'compile_profile': return 'compile_profile';
+        case 'build_summary': return 'build_summary';
+        case 'generate_questions': return 'generate_questions';
+        case 'finish': return 'finish';
+        default: return 'finish';
+      }
+    }, {
+      compile_profile: 'compile_profile',
+      build_summary: 'build_summary',
+      generate_questions: 'generate_questions',
+      finish: 'finish'
+    })
+
+    // extract_answer → merge_draft (成功) | generate_questions (失败) | END
+    .addConditionalEdges('extract_answer', (state) => {
+      if (state.currentStep === 'merge_draft') return 'merge_draft';
+      if (state.currentStep === 'generate_questions') return 'generate_questions';
+      if (state.currentStep === 'finish') return 'finish';
+      return 'finish';
+    }, {
+      merge_draft: 'merge_draft',
+      generate_questions: 'generate_questions',
+      finish: 'finish'
+    })
+
+    // merge_draft → validate_coverage
+    .addEdge('merge_draft', 'validate_coverage')
+
+    // validate_coverage → build_summary | generate_questions | finish
+    .addConditionalEdges('validate_coverage', (state) => {
+      switch (state.currentStep) {
+        case 'build_summary': return 'build_summary';
+        case 'generate_questions': return 'generate_questions';
+        case 'finish': return 'finish';
+        default: return 'finish';
+      }
+    }, {
+      build_summary: 'build_summary',
+      generate_questions: 'generate_questions',
+      finish: 'finish'
+    })
+
+    // generate_questions → END (awaiting user input)
+    .addConditionalEdges('generate_questions', (state) => {
+      if (state.awaitingUserInput) return 'await_input';
+      // 错误情况
+      return 'finish';
     }, {
       await_input: END,
-      continue: 'build_persona_config'
+      finish: 'finish'
     })
-    // 条件边：build_persona_config 失败（persona 为空）时直接结束
-    .addConditionalEdges('build_persona_config', (state) => {
-      if (!state.persona) {
-        return 'fail';
-      }
-      return 'continue';
+
+    // build_summary → review
+    .addEdge('build_summary', 'review')
+
+    // review → END (awaiting user confirmation)
+    .addConditionalEdges('review', (state) => {
+      if (state.awaitingUserInput) return 'await_input';
+      return 'finish';
     }, {
-      fail: END,
-      continue: 'configure_proactive_policy'
+      await_input: END,
+      finish: 'finish'
     })
+
+    // compile_profile → configure_proactive_policy (W3: 调整流程，让 persist_and_lock 能在单一事务中写入所有数据)
+    .addConditionalEdges('compile_profile', (state) => {
+      if (state.currentStep === 'configure_proactive_policy') return 'configure_proactive_policy';
+      if (state.currentStep === 'review') return 'review';
+      return 'finish';
+    }, {
+      configure_proactive_policy: 'configure_proactive_policy',
+      review: 'review',
+      finish: 'finish'
+    })
+
+    // configure_proactive_policy → configure_model_mode
     .addEdge('configure_proactive_policy', 'configure_model_mode')
-    .addEdge('configure_model_mode', 'save_onboarding_result')
-    .addEdge('save_onboarding_result', 'activate_character')
+    // configure_model_mode → persist_and_lock (W3: 现在持久化节点接收完整的 policy/mode 数据)
+    .addEdge('configure_model_mode', 'persist_and_lock')
+
+    // persist_and_lock → activate_character (成功) | review (失败)
+    .addConditionalEdges('persist_and_lock', (state) => {
+      if (state.currentStep === 'activate_character') return 'activate_character';
+      if (state.currentStep === 'review') return 'review';
+      return 'finish';
+    }, {
+      activate_character: 'activate_character',
+      review: 'review',
+      finish: 'finish'
+    })
+
+    // activate_character → finish
     .addEdge('activate_character', 'finish')
+    // finish → END
     .addEdge('finish', END);
 
   return graph.compile();
 }
 
-/** OnboardingGraph 运行器 */
+/**
+ * OnboardingGraph 运行器。
+ * 每次 IPC 调用通过 run() 执行一轮 Graph。
+ * Graph 在 generate_questions 或 review 节点暂停，等待下一次 IPC 调用。
+ */
 export class OnboardingGraphRunner {
   private compiledGraph: ReturnType<typeof createOnboardingGraph>;
   private packManager: CharacterPackManager;
+  private gateway: ModelGateway;
 
-  constructor(packManager: CharacterPackManager) {
+  constructor(packManager: CharacterPackManager, gateway: ModelGateway) {
     this.packManager = packManager;
-    this.compiledGraph = createOnboardingGraph(packManager);
+    this.gateway = gateway;
+    this.compiledGraph = createOnboardingGraph(packManager, gateway);
   }
 
   /**
-   * 运行 Onboarding。
-   * 若 collect_user_preferences 设置了 awaitingUserInput，图会在条件边处停止（END），
-   * 调用方应检查返回的 state.awaitingUserInput；为 true 时等待用户输入，
-   * 之后调用 resumeWithPreferences 继续。
+   * 运行一轮 Onboarding Graph。
+   *
+   * 调用方需要根据 state.userAction 准备初始状态：
+   * - 'start'：首次启动，state.draft=null
+   * - 'answer'：用户提交答案，state.lastUserInput=用户输入，state.draft=null（从 checkpoint 恢复）
+   * - 'feedback'：用户在 review 阶段返回修改，state.draft=null（从 checkpoint 恢复）
+   * - 'confirm'：用户确认摘要，state.draft=null（从 checkpoint 恢复）
+   *
+   * Graph 会在以下情况暂停（返回 awaitingUserInput=true）：
+   * - generate_questions：等待用户提交答案
+   * - review：等待用户确认或返回修改
    */
   async run(initialState: OnboardingStateType): Promise<OnboardingStateType> {
-    log.info('running onboarding graph');
-    const result = await this.compiledGraph.invoke(initialState);
+    log.info('running onboarding graph', {
+      fields: {
+        userAction: initialState.userAction,
+        phase: initialState.phase,
+        traceId: initialState.traceId
+      }
+    });
+
+    // 每次 IPC 调用作为独立 turn，重置模型调用计数
+    // 防止跨轮累积触发 maxModelCallsPerTurn 上限（onboarding 至少需要 4 次模型调用）
+    this.gateway.beginTurn(initialState.traceId);
+    let result: unknown;
+    try {
+      result = await this.compiledGraph.invoke(initialState);
+    } finally {
+      this.gateway.endTurn();
+    }
     const finalState = result as OnboardingStateType;
 
     if (finalState.awaitingUserInput) {
       log.info('onboarding paused, awaiting user input', {
-        fields: { pendingQuestion: finalState.pendingQuestion }
+        fields: {
+          currentStep: finalState.currentStep,
+          phase: finalState.phase,
+          pendingQuestionLength: finalState.pendingQuestion.length,
+          traceId: initialState.traceId
+        }
+      });
+    } else if (finalState.isCompleted) {
+      log.info('onboarding completed', {
+        fields: {
+          userId: finalState.userId,
+          characterId: finalState.characterId,
+          traceId: initialState.traceId
+        }
+      });
+    } else if (finalState.phase === 'error') {
+      log.warn('onboarding ended in error state', {
+        fields: {
+          errorReason: finalState.errorReason,
+          errors: finalState.errors,
+          traceId: initialState.traceId
+        }
       });
     }
+
     return finalState;
   }
 
-  /**
-   * 在中断后恢复并应用用户偏好，然后继续运行剩余节点。
-   * 流程：applyUserPreferences → 重新运行 graph（此时 awaitingUserInput=false 会直接继续）。
-   */
-  async resumeWithPreferences(
-    state: OnboardingStateType,
-    preferences: Partial<UserPreferences>
-  ): Promise<OnboardingStateType> {
-    log.info('resuming onboarding with user preferences');
-
-    // 应用用户偏好：清除 awaitingUserInput，设置 preferences
-    const update = applyUserPreferences(state, preferences);
-    const resumedState: OnboardingStateType = { ...state, ...update };
-
-    // 重新运行：此时 collect_user_preferences 节点检测到 preferences 已存在，
-    // 会直接返回 currentStep='build_persona_config'，条件边走 'continue' 分支继续后续流程。
-    const result = await this.compiledGraph.invoke(resumedState);
-    return result as OnboardingStateType;
+  /** 获取 packManager（供调用方使用） */
+  getPackManager(): CharacterPackManager {
+    return this.packManager;
   }
 
-  /**
-   * 仅应用用户偏好（不重新运行 graph）。
-   * 供需要分步控制的调用方使用。
-   */
-  applyPreferencesAndResume(
-    state: OnboardingStateType,
-    preferences: Partial<UserPreferences>
-  ): OnboardingStateUpdate {
-    return applyUserPreferences(state, preferences);
+  /** 获取 gateway（供调用方使用） */
+  getGateway(): ModelGateway {
+    return this.gateway;
   }
 }
+
+// 重新导出旧接口的兼容函数（供现有测试使用）
+export { mergePersonaWithUserCustomizations, detectLockedFieldOverride } from './nodes/build-persona-config';

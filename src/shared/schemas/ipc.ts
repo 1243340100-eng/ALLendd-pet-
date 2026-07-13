@@ -9,8 +9,23 @@ import { z } from 'zod';
 export const IPC_CHANNELS = [
   'api-config-get',
   'api-config-save',
+  'material:list',
+  'material:import',
+  'material:apply',
+  'material:restore-default',
+  'runtime:reset-user-data',
   'chat-send',
   'onboarding-submit',
+  'onboarding:get-state',
+  'onboarding:start',
+  'onboarding:submit-answer',
+  'onboarding:submit-answers',
+  'onboarding:suggest',
+  'onboarding:revise-summary',
+  'onboarding:confirm-summary',
+  'onboarding:reset',
+  'onboarding:save-pending-answers',
+  'onboarding:clear-pending-answers',
   'proactive-event:ack',
   'safe-shell:interpret',
   'safe-shell:confirm',
@@ -57,6 +72,7 @@ export const ipcInputSchemas = {
     model: z.string().min(1).max(128),
     apiKey: z.string().max(512).optional()
   }),
+  'material:apply': z.string().regex(/^material-[a-z0-9-]{8,80}$/i),
   'chat-send': z.object({
     message: z.string().min(1).max(8000),
     history: z.array(z.object({
@@ -124,7 +140,64 @@ export const ipcInputSchemas = {
       end_time: z.string().max(8).optional(),
       completed: z.union([z.boolean(), z.number()]).optional()
     })).max(50)
-  })
+  }),
+  // ===== V8 角色初始化向导 IPC =====
+  // 'onboarding:get-state'：无输入，主进程从 checkpoint 恢复（无需 schema，走默认通过分支）
+  // 启动向导（首次或重置后开始）
+  'onboarding:start': z.object({
+    revision: z.number().int().min(0)
+  }).strict(),
+  // 用户提交自然语言回答
+  'onboarding:submit-answer': z.object({
+    answer: z.string().min(1).max(2000),
+    revision: z.number().int().min(0)
+  }).strict(),
+  // 用户在 review 阶段返回修改意见
+  // targetStage 存在时：确定性地路由到该阶段的 generate_questions，不调用 AnswerExtractor
+  // targetStage 不存在时：走 AnswerExtractor 自然语言提取流程
+  'onboarding:revise-summary': z.object({
+    feedback: z.string().min(1).max(2000),
+    revision: z.number().int().min(0),
+    targetStage: z.enum(['basic', 'speaking', 'relationship', 'taboos']).optional()
+  }).strict(),
+  // 用户确认摘要，触发 compile + lock
+  'onboarding:confirm-summary': z.object({
+    revision: z.number().int().min(0)
+  }).strict(),
+  // ===== V9 问题卡片协议 =====
+  // V9：用户提交结构化问题卡片回答
+  // 安全约束：不接收 selectedValues，后端从 checkpoint 中的 question.options 重新映射
+  'onboarding:submit-answers': z.object({
+    answers: z.array(z.object({
+      questionId: z.string().min(1).max(128),
+      fieldPaths: z.array(z.string().min(1).max(64)).min(1).max(4),
+      answerType: z.enum(['text', 'single_choice', 'multiple_choice', 'hybrid']),
+      selectedOptionIds: z.array(z.string().min(1).max(32)).max(8).optional(),
+      customText: z.string().max(2000).optional(),
+      usedSuggestedAnswer: z.boolean().optional()
+    })).min(1).max(8),
+    revision: z.number().int().min(0)
+  }).strict(),
+  // V9：用户请求 AI 建议答案
+  'onboarding:suggest': z.object({
+    questionId: z.string().min(1).max(128),
+    revision: z.number().int().min(0)
+  }).strict(),
+  // P2: 保存未提交的卡片选择（debounce 后批量保存）
+  // 安全约束：不接收 selectedValues，后端从 checkpoint 的 question.options 重新映射
+  'onboarding:save-pending-answers': z.object({
+    answers: z.array(z.object({
+      questionId: z.string().min(1).max(128),
+      selectedOptionIds: z.array(z.string().min(1).max(32)).max(8).optional(),
+      customText: z.string().max(2000).optional(),
+      usedSuggestedAnswer: z.boolean().optional()
+    })).max(8),
+    revision: z.number().int().min(0)
+  }).strict(),
+  // P2: 清除未提交的卡片选择（提交成功/进入下一批/reset 时调用）
+  'onboarding:clear-pending-answers': z.object({
+    revision: z.number().int().min(0)
+  }).strict()
 } as const;
 
 /** 校验指定通道的输入 */

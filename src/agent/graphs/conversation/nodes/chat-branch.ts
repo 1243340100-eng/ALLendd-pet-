@@ -12,6 +12,7 @@ import { DEFAULT_EXPRESSION, DEFAULT_MOTION } from '../state';
 import type { ModelGateway } from '../../../../services/ModelGateway';
 import type { MemoryStore } from '../../../../services/MemoryStore';
 import { shouldRetrieveMemory } from './route-or-extract';
+import { generateHarnessPolicy, getDefaultHarnessPolicy } from '../../../../services/ConversationHarnessAdapter';
 import { createLogger } from '../../../../infrastructure/logging/logger';
 import { z } from 'zod';
 
@@ -60,12 +61,54 @@ function buildSystemPrompt(persona: ConversationStateType['persona']): string {
   return parts.join('\n\n');
 }
 
+/** 构建 harness 策略提示词片段（V8 新增） */
+function buildHarnessHints(state: ConversationStateType): string {
+  // V8：如果 personalityProfile 存在，生成 harness 策略
+  if (!state.personalityProfile) {
+    return '';
+  }
+
+  const policy = generateHarnessPolicy(state.personalityProfile, state.userInput);
+
+  const hints: string[] = [];
+  hints.push(`[本轮策略] 回复深度：${policy.responseDepth}，最大要点数：${policy.maxMainPoints}`);
+
+  if (policy.boundaryAction !== 'comply') {
+    hints.push(`边界动作：${policy.boundaryAction}（检测到敏感内容，按角色禁区处理）`);
+  }
+
+  if (policy.playfulness !== 'none') {
+    hints.push(`互动风格：${policy.playfulness}`);
+  }
+
+  if (policy.askQuestion) {
+    hints.push('可以适度主动追问用户的状态或需求。');
+  }
+
+  if (policy.toneHints.length > 0) {
+    hints.push(`语气提示：${policy.toneHints.join('、')}`);
+  }
+
+  if (policy.mustAvoid.length > 0) {
+    hints.push(`必须避免：${policy.mustAvoid.join('、')}`);
+  }
+
+  // harness 策略不能覆盖 corePrompt、关系边界和禁区
+  hints.push('注意：以上策略为辅助提示，不得覆盖角色核心设定、关系边界和禁区。');
+
+  return hints.length > 1 ? hints.join('\n') : '';
+}
+
 /** 构建消息列表 */
 function buildMessages(state: ConversationStateType): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
   const systemPrompt = buildSystemPrompt(state.persona);
 
+  // V8：注入 harness 策略（如果有 personalityProfile）
+  const harnessHints = buildHarnessHints(state);
+  const finalSystemPrompt = harnessHints ? `${systemPrompt}\n\n${harnessHints}` : systemPrompt;
+
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-    { role: 'system', content: systemPrompt }
+    { role: 'system', content: finalSystemPrompt }
   ];
 
   // 添加历史消息（最多 6 条）

@@ -38,6 +38,20 @@ export async function saveOnboardingResult(
     };
   }
 
+  // V8 增强：compiledProfile 必须存在且已锁定
+  if (!state.compiledProfile) {
+    log.warn('onboarding not completed: no compiledProfile', {
+      fields: { traceId: state.traceId }
+    });
+    return {
+      isCompleted: false,
+      currentStep: 'finish',
+      phase: 'error',
+      errorReason: 'no-compiled-profile',
+      errors: [...state.errors, 'No compiledProfile in save_onboarding_result']
+    };
+  }
+
   // 生成 userId（如果尚无）
   let userId = state.userId || settingsRepository.get('user_id') || '';
   if (!userId) {

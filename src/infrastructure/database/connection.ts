@@ -13,7 +13,7 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import { existsSync, copyFileSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { runMigrations } from './migration-runner';
-import { getCurrentMigrationVersion } from './migration-runner';
+import { getCurrentMigrationVersion, LATEST_MIGRATION_VERSION } from './migration-runner';
 import { createLogger } from '../logging/logger';
 
 const log = createLogger('database');
@@ -98,7 +98,7 @@ export function openDatabase(options: DatabaseOptions): DatabaseType {
     // 忽略：全新数据库
   }
 
-  const latestVersion = 1; // 与 migration-runner 的 ALL_MIGRATIONS 一致
+  const latestVersion = LATEST_MIGRATION_VERSION; // 从 migration-runner 导出，避免硬编码
   if (currentVersion > 0 && currentVersion < latestVersion) {
     // 需要升级：先备份
     backupDatabaseIfNeeded(options);

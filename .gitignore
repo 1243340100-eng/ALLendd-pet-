@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 release/
+release-ui-fix/
 dist/
 out/
 build/
@@ -47,3 +48,8 @@ temp/
 tmp/
 .tmp-electron-data/
 asar-list.txt
+
+# 本地设计规格文件（不提交到仓库）
+角色初始化实现计划.txt
+角色初始化方向修正.txt
+.git-commit-msg.txt

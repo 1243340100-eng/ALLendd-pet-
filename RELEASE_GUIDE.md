@@ -371,7 +371,7 @@ V1 之后框架运行 LangGraph 新架构，发布前必须验证打包版实际
 npm.cmd run test:packaged-new-arch
 ```
 
-该测试会启动真实的 `release/win-unpacked/PetFramework.exe`，使用隔离的 `--user-data-dir`，通过 `architecture:get-status` IPC 验证 LangGraph 已实际运行。
+该测试会启动真实的 `release-ui-fix/win-unpacked/PetFramework.exe`，使用隔离的 `--user-data-dir`，通过 `architecture:get-status` IPC 验证 LangGraph 已实际运行。
 
 2. 手动验证：打开应用后点击"状态"按钮打开 State 面板，查看 "Agent 架构状态" 区域。
 

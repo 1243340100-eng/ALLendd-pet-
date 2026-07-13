@@ -61,6 +61,15 @@ function testIpcValidation() {
 
   const knownCheck = IPC_CHANNELS.length > 0;
   check('IPC: whitelist non-empty', knownCheck);
+  check('IPC: material import channel is allowlisted', isKnownIpcChannel('material:import'));
+  check(
+    'IPC: valid material id passes',
+    validateIpcInput('material:apply', 'material-12345678-abcd').valid === true
+  );
+  check(
+    'IPC: invalid material id rejected',
+    validateIpcInput('material:apply', '../outside').valid === false
+  );
 
   // chat-send valid
   const chatOk = validateIpcInput('chat-send', {

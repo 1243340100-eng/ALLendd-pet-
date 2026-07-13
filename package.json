@@ -40,6 +40,7 @@
     "test:reflection-recovery": "tsx tests/unit/reflection-worker-recovery.test.ts",
     "test:onboarding-e2e": "tsx tests/unit/onboarding-to-startup-e2e.test.ts",
     "test:weather": "tsx tests/unit/weather-adapter.test.ts",
+    "test:ui-layout": "electron tests/ui/layout-visual-smoke.js",
     "test:packaged-new-arch": "node tests/packaged/new-arch.test.js",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
@@ -59,7 +60,7 @@
     "electronVersion": "31.7.7",
     "electronDist": "node_modules/electron/dist",
     "directories": {
-      "output": "release"
+      "output": "release-ui-fix"
     },
     "files": [
       "app/**/*",

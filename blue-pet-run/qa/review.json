@@ -1,0 +1,990 @@
+{
+  "ok": true,
+  "frames_root": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames",
+  "errors": [],
+  "warnings": [
+    "idle used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "running-right used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "running-left used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "waving used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "jumping used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "failed used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "waiting used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "running used extraction method stable-slots; confirm motion playback remains stable and unclipped",
+    "review used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+  ],
+  "rows": [
+    {
+      "state": "idle",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "idle used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\idle\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17433,
+          "bbox": [
+            20,
+            5,
+            178,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 253
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\idle\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17499,
+          "bbox": [
+            13,
+            5,
+            178,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 274
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\idle\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17561,
+          "bbox": [
+            13,
+            5,
+            178,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 304
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\idle\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16992,
+          "bbox": [
+            13,
+            14,
+            179,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 273
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\idle\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17542,
+          "bbox": [
+            13,
+            5,
+            178,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 266
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\idle\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17390,
+          "bbox": [
+            13,
+            5,
+            171,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 252
+        }
+      ]
+    },
+    {
+      "state": "running-right",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "running-right used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16599,
+          "bbox": [
+            26,
+            6,
+            166,
+            199
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 315
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16334,
+          "bbox": [
+            30,
+            8,
+            162,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 301
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16112,
+          "bbox": [
+            27,
+            10,
+            164,
+            198
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 305
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16053,
+          "bbox": [
+            30,
+            8,
+            162,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 290
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15944,
+          "bbox": [
+            27,
+            7,
+            164,
+            198
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 336
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15962,
+          "bbox": [
+            24,
+            7,
+            168,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 288
+        },
+        {
+          "index": 6,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16036,
+          "bbox": [
+            24,
+            7,
+            168,
+            195
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 284
+        },
+        {
+          "index": 7,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-right\\07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15875,
+          "bbox": [
+            28,
+            7,
+            163,
+            199
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 304
+        }
+      ]
+    },
+    {
+      "state": "running-left",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "running-left used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16608,
+          "bbox": [
+            24,
+            6,
+            164,
+            199
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 320
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16348,
+          "bbox": [
+            30,
+            8,
+            162,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 299
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16086,
+          "bbox": [
+            27,
+            10,
+            164,
+            198
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 306
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16053,
+          "bbox": [
+            30,
+            8,
+            162,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 290
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15945,
+          "bbox": [
+            27,
+            7,
+            164,
+            198
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 325
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15962,
+          "bbox": [
+            24,
+            7,
+            168,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 288
+        },
+        {
+          "index": 6,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16036,
+          "bbox": [
+            24,
+            7,
+            168,
+            195
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 284
+        },
+        {
+          "index": 7,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running-left\\07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15871,
+          "bbox": [
+            28,
+            7,
+            163,
+            199
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 300
+        }
+      ]
+    },
+    {
+      "state": "waving",
+      "expected_frames": 4,
+      "actual_frames": 4,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "waving used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waving\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18079,
+          "bbox": [
+            11,
+            5,
+            180,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 120
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waving\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18127,
+          "bbox": [
+            11,
+            5,
+            181,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 117
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waving\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18219,
+          "bbox": [
+            11,
+            5,
+            181,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 137
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waving\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18408,
+          "bbox": [
+            11,
+            5,
+            181,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 140
+        }
+      ]
+    },
+    {
+      "state": "jumping",
+      "expected_frames": 5,
+      "actual_frames": 5,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "jumping used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\jumping\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 7196,
+          "bbox": [
+            41,
+            86,
+            150,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 73
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\jumping\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 7575,
+          "bbox": [
+            41,
+            48,
+            150,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 62
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\jumping\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 7515,
+          "bbox": [
+            41,
+            5,
+            150,
+            130
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 69
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\jumping\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 7677,
+          "bbox": [
+            41,
+            50,
+            150,
+            179
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 77
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\jumping\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 6824,
+          "bbox": [
+            41,
+            91,
+            150,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 61
+        }
+      ]
+    },
+    {
+      "state": "failed",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "failed used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17141,
+          "bbox": [
+            15,
+            5,
+            177,
+            200
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 300
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15107,
+          "bbox": [
+            21,
+            22,
+            170,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 289
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14105,
+          "bbox": [
+            23,
+            32,
+            169,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 247
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 10819,
+          "bbox": [
+            27,
+            60,
+            164,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 192
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 10900,
+          "bbox": [
+            26,
+            60,
+            165,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 206
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 12437,
+          "bbox": [
+            24,
+            47,
+            168,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 221
+        },
+        {
+          "index": 6,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13914,
+          "bbox": [
+            23,
+            32,
+            168,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 250
+        },
+        {
+          "index": 7,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\failed\\07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15449,
+          "bbox": [
+            20,
+            18,
+            172,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 263
+        }
+      ]
+    },
+    {
+      "state": "waiting",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "waiting used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waiting\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17034,
+          "bbox": [
+            23,
+            7,
+            168,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 267
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waiting\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17187,
+          "bbox": [
+            15,
+            7,
+            176,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 285
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waiting\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16880,
+          "bbox": [
+            22,
+            5,
+            169,
+            200
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 279
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waiting\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15696,
+          "bbox": [
+            33,
+            15,
+            157,
+            199
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 230
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waiting\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16774,
+          "bbox": [
+            24,
+            5,
+            166,
+            200
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 239
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\waiting\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17636,
+          "bbox": [
+            15,
+            5,
+            176,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 294
+        }
+      ]
+    },
+    {
+      "state": "running",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "running used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17991,
+          "bbox": [
+            13,
+            6,
+            178,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 215
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16816,
+          "bbox": [
+            30,
+            6,
+            161,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 184
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18059,
+          "bbox": [
+            28,
+            8,
+            163,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 224
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17771,
+          "bbox": [
+            28,
+            8,
+            163,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 189
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18425,
+          "bbox": [
+            11,
+            5,
+            180,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 260
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\running\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18022,
+          "bbox": [
+            11,
+            7,
+            180,
+            201
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 233
+        }
+      ]
+    },
+    {
+      "state": "review",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "stable-slots",
+      "ok": true,
+      "errors": [],
+      "warnings": [
+        "review used extraction method stable-slots; confirm motion playback remains stable and unclipped"
+      ],
+      "frames": [
+        {
+          "index": 0,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\review\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18512,
+          "bbox": [
+            9,
+            5,
+            182,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 273
+        },
+        {
+          "index": 1,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\review\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 17623,
+          "bbox": [
+            13,
+            14,
+            178,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 246
+        },
+        {
+          "index": 2,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\review\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 19015,
+          "bbox": [
+            15,
+            5,
+            176,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 268
+        },
+        {
+          "index": 3,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\review\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18312,
+          "bbox": [
+            17,
+            6,
+            173,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 229
+        },
+        {
+          "index": 4,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\review\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18411,
+          "bbox": [
+            9,
+            7,
+            182,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 258
+        },
+        {
+          "index": 5,
+          "file": "D:\\Documents\\\u5c55\u793a\u9879\u76ee\u5185\u5bb9\\roxy-electron-pet-framework\\blue-pet-run\\frames\\review\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 18040,
+          "bbox": [
+            11,
+            5,
+            180,
+            202
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 274
+        }
+      ]
+    }
+  ]
+}

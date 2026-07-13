@@ -7,7 +7,7 @@
  * - 用户回复后，从 checkpoint 恢复状态继续执行
  * - 已消费的 checkpoint 标记 consumed_at，不删除（审计）
  */
-import { getDatabase } from '../connection';
+import { getDatabase, transaction } from '../connection';
 
 export interface CheckpointRow {
   id: string;
@@ -21,7 +21,7 @@ export interface CheckpointRow {
 }
 
 export const checkpointRepository = {
-  /** 保存 checkpoint（Graph 中断时） */
+  /** 保存 checkpoint（Graph 中断时）。同 scope_key 的旧 checkpoint 自动标记消费。UPDATE+INSERT 在单一事务中。 */
   save(checkpoint: {
     id: string;
     graph_type: string;
@@ -29,12 +29,23 @@ export const checkpointRepository = {
     reason: string;
     scope_key?: string;
   }): void {
-    getDatabase().prepare(`
-      INSERT OR REPLACE INTO graph_checkpoints (id, graph_type, state_json, reason, scope_key)
-      VALUES (@id, @graph_type, @state_json, @reason, @scope_key)
-    `).run({
-      ...checkpoint,
-      scope_key: checkpoint.scope_key ?? ''
+    const scopeKey = checkpoint.scope_key ?? '';
+    transaction(() => {
+      const db = getDatabase();
+      // 先消费同 scope_key 的旧未消费 checkpoint，确保 getActiveByScope 只返回最新
+      if (scopeKey) {
+        db.prepare(`
+          UPDATE graph_checkpoints SET consumed_at = datetime('now')
+          WHERE graph_type = ? AND scope_key = ? AND consumed_at IS NULL
+        `).run(checkpoint.graph_type, scopeKey);
+      }
+      db.prepare(`
+        INSERT OR REPLACE INTO graph_checkpoints (id, graph_type, state_json, reason, scope_key)
+        VALUES (@id, @graph_type, @state_json, @reason, @scope_key)
+      `).run({
+        ...checkpoint,
+        scope_key: scopeKey
+      });
     });
   },
 

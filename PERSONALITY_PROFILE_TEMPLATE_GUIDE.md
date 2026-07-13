@@ -264,7 +264,7 @@ node --check .\app\config\pet-profile.js
 框架测试入口：
 
 ```text
-D:\Documents\展示项目内容\roxy-electron-pet-framework\release\win-unpacked\PetFramework.exe
+D:\Documents\展示项目内容\roxy-electron-pet-framework\release-ui-fix\win-unpacked\PetFramework.exe
 ```
 
 ## v1.6.0 表情能力边界

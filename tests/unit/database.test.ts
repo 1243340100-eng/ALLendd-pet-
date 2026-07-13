@@ -162,7 +162,7 @@ function testAutoInitFromEmpty(): void {
     check('AutoInit: _migrations tracking table exists', tableNames.includes('_migrations'));
 
     const version = getCurrentMigrationVersion(db);
-    check('AutoInit: migration version is 7 after init', version === 7);
+    check('AutoInit: migration version is 8 after init', version === 8);
 
     db.close();
   } finally {
@@ -181,7 +181,7 @@ function testMigrationIdempotency(): void {
     try {
       const result = runMigrations(db);
       check('Migration: re-run returns applied=0', result.applied === 0);
-      check('Migration: re-run keeps version=7', result.currentVersion === 7);
+      check('Migration: re-run keeps version=8', result.currentVersion === 8);
     } catch (e) {
       secondRunOk = false;
       console.error('Migration re-run threw:', (e as Error)?.message);

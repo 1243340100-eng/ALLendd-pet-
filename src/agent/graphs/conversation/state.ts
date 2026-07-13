@@ -15,6 +15,7 @@ import type {
 } from '../../../shared/contracts/graph-state';
 import type { AppEvent } from '../../../shared/contracts/app-event';
 import type { ModelMode, ErrorCode } from '../../../shared/constants';
+import type { PersonalityProfile } from '../../../services/character-onboarding/schemas';
 
 /** 意图类型 */
 export type Intent = 'chat' | 'create_reminder' | 'list_schedule' | 'expression';
@@ -57,6 +58,8 @@ export const ConversationState = Annotation.Root({
   sessionId: Annotation<string>,
   /** Persona 配置 */
   persona: Annotation<PersonaConfig | null>,
+  /** V8 新增：personality profile（来自已锁定 CompiledCharacterProfile） */
+  personalityProfile: Annotation<PersonalityProfile | null>,
   /** 模型模式 */
   modelMode: Annotation<ModelMode>,
   /** 追踪 ID */
@@ -125,6 +128,8 @@ export function createInitialConversationState(params: {
   characterId: string;
   sessionId: string;
   persona: PersonaConfig | null;
+  /** V8 新增：personality profile（可选，来自已锁定 CompiledCharacterProfile） */
+  personalityProfile?: PersonalityProfile | null;
   modelMode: ModelMode;
   userInput: string;
   messages?: ChatMessage[];
@@ -135,6 +140,7 @@ export function createInitialConversationState(params: {
     characterId: params.characterId,
     sessionId: params.sessionId,
     persona: params.persona,
+    personalityProfile: params.personalityProfile ?? null,
     modelMode: params.modelMode,
     traceId: params.event.correlationId || `conv-${Date.now()}`,
     startedAt: new Date().toISOString(),

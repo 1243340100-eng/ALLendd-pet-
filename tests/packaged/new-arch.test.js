@@ -24,8 +24,11 @@ const os = require('os');
 const { spawn } = require('child_process');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
-const exePath = path.join(projectRoot, 'release', 'win-unpacked', 'PetFramework.exe');
-const asarPath = path.join(projectRoot, 'release', 'win-unpacked', 'resources', 'app.asar');
+const packagedAppDir = process.env.PET_FRAMEWORK_PACKAGED_DIR
+  ? path.resolve(process.env.PET_FRAMEWORK_PACKAGED_DIR)
+  : path.join(projectRoot, 'release-ui-fix', 'win-unpacked');
+const exePath = path.join(packagedAppDir, 'PetFramework.exe');
+const asarPath = path.join(packagedAppDir, 'resources', 'app.asar');
 
 // ===== 配置 =====
 const STARTUP_TIMEOUT_MS = 45000;

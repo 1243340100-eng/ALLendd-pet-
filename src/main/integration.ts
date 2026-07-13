@@ -18,6 +18,7 @@
  */
 import { initDatabase, closeDatabase, getDatabase } from '../infrastructure/database/connection';
 import { settingsRepository } from '../infrastructure/database/repositories/settings-repository';
+import { characterProfileRepository } from '../infrastructure/database/repositories/character-profile-repository';
 import { ModelGateway } from '../services/ModelGateway';
 import { SkillRegistry } from '../services/SkillRegistry';
 import { MemoryStore } from '../services/MemoryStore';
@@ -50,6 +51,8 @@ import type { AppEvent } from '../shared/contracts/app-event';
 import type { ResponseDTO } from '../agent/graphs/conversation/state';
 import { PlanningGraphRunner } from '../agent/graphs/planning/graph';
 import type { PlanningResponseDTO } from '../agent/graphs/planning/state';
+import type { OnboardingIpcResponse, OnboardingSuggestionDto } from '../shared/dto/renderer';
+import type { OnboardingStateType } from '../agent/graphs/onboarding/state';
 import { planRepository } from '../infrastructure/database/repositories/plan-repository';
 import { toPlanDraft } from '../agent/graphs/planning/tools';
 import { createLogger } from '../infrastructure/logging/logger';
@@ -313,6 +316,45 @@ export function getUserId(): string {
 }
 
 /**
+ * W5: 获取当前激活角色 ID。
+ * 优先从 SQLite settings 的 active_character_id 读取（V8 向导确认后写入的新角色 ID），
+ * 回退到角色包管理器的基础角色 ID（用于未完成向导的旧用户）。
+ *
+ * 这确保聊天、记忆、计划、提醒和主动事件使用统一的角色 scope，
+ * 不会出现"聊天用 default-roxy，计划用 user-default-roxy-4"的分裂。
+ */
+export function getActiveCharacterId(): string {
+  return settingsRepository.get('active_character_id')
+    ?? characterPackManager?.getActiveCharacterId()
+    ?? 'default-roxy';
+}
+
+/**
+ * W4+I4: 检查当前用户是否已完成角色初始化向导。
+ * 同时满足以下条件才返回 true：
+ * 1. app_settings.onboarding_completed === 'true'
+ * 2. active_character_id 非空
+ * 3. getActiveLockedProfile() 返回非 null
+ * 4. profile.persona.characterId === active_character_id
+ *
+ * 旧版升级用户（onboarding_completed=true 但无 locked profile）返回 false，
+ * 需要通过 resumeOnboarding 兼容适配层或重新完成 V8 向导。
+ */
+export function isOnboardingCompleted(): boolean {
+  if (settingsRepository.get('onboarding_completed') !== 'true') return false;
+  const activeCharacterId = settingsRepository.get('active_character_id');
+  if (!activeCharacterId) return false;
+  try {
+    const lockedProfile = characterProfileRepository.getActiveLockedProfile();
+    if (!lockedProfile) return false;
+    if (lockedProfile.persona.characterId !== activeCharacterId) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 处理聊天消息（供旧 main.js IPC 调用）。
  * 使用 dispatchChat 直接获取结果，避免临时替换全局回调的竞争风险。
  * 期间若触发主动提醒，结果会通过 rendererCallback 正常送达。
@@ -392,6 +434,407 @@ export async function resumeOnboardingWithPreferences(
     refreshAdapters();
   }
   return completed;
+}
+
+// ===== V8 角色初始化向导 IPC 集成 =====
+
+/**
+ * 将 OnboardingStateType 转换为 renderer 可见的 IPC 响应 DTO。
+ * 安全约束：不暴露完整 Draft / Persona / isLocked / onboardingCompleted / configVersion。
+ */
+function toOnboardingIpcResponse(state: OnboardingStateType): OnboardingIpcResponse {
+  return {
+    phase: state.phase,
+    currentStage: state.currentStage,
+    pendingQuestion: state.pendingQuestion,
+    currentQuestions: state.currentQuestions.map((q) => ({
+      id: q.id,
+      fieldPaths: q.fieldPaths,
+      type: q.type,
+      question: q.question,
+      description: q.description,
+      options: q.options,
+      allowOther: q.allowOther,
+      otherPlaceholder: q.otherPlaceholder,
+      suggestedAnswer: q.suggestedAnswer,
+      maxSelect: q.maxSelect,
+      required: q.required
+    })),
+    completionProgress: state.completionProgress,
+    summaryDisplayText: state.summary?.displayText ?? null,
+    revision: state.draft?.revision ?? 0,
+    isCompleted: state.isCompleted,
+    errorReason: state.errorReason,
+    traceId: state.traceId,
+    pendingAnswers: state.pendingAnswers ?? null
+  };
+}
+
+/** 处理 onboarding:get-state IPC */
+export async function handleOnboardingGetState(): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    log.warn('cannot get onboarding state, dispatcher not initialized');
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const state = await dispatcher.getOnboardingState();
+    return toOnboardingIpcResponse(state);
+  } catch (error) {
+    log.error('handleOnboardingGetState failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** 处理 onboarding:start IPC */
+export async function handleOnboardingStart(revision: number): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const state = await dispatcher.startOnboarding(revision);
+    return toOnboardingIpcResponse(state);
+  } catch (error) {
+    log.error('handleOnboardingStart failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** 处理 onboarding:reset IPC（重设人物性格） */
+export async function handleOnboardingReset(): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    log.warn('cannot reset onboarding, dispatcher not initialized');
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const state = await dispatcher.resetOnboarding();
+    return toOnboardingIpcResponse(state);
+  } catch (error) {
+    log.error('handleOnboardingReset failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** P2: 处理 onboarding:save-pending-answers IPC */
+export function handleOnboardingSavePendingAnswers(
+  answers: Array<{ questionId: string; selectedOptionIds?: string[]; customText?: string; usedSuggestedAnswer?: boolean }>,
+  revision: number
+): { ok: boolean; reason?: string } {
+  if (!dispatcher) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return dispatcher.savePendingAnswers(answers, revision);
+}
+
+/** P2: 处理 onboarding:clear-pending-answers IPC */
+export function handleOnboardingClearPendingAnswers(
+  revision: number
+): { ok: boolean; reason?: string } {
+  if (!dispatcher) {
+    return { ok: false, reason: 'architecture-not-ready' };
+  }
+  return dispatcher.clearPendingAnswers(revision);
+}
+
+/** 处理 onboarding:submit-answer IPC */
+export async function handleOnboardingSubmitAnswer(
+  answer: string,
+  revision: number
+): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const state = await dispatcher.submitOnboardingAnswer(answer, revision);
+    const response = toOnboardingIpcResponse(state);
+    // 如果向导完成（confirm 后），刷新适配器
+    if (state.isCompleted) {
+      refreshAdapters();
+    }
+    return response;
+  } catch (error) {
+    log.error('handleOnboardingSubmitAnswer failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** 处理 onboarding:revise-summary IPC */
+export async function handleOnboardingReviseSummary(
+  feedback: string,
+  revision: number,
+  targetStage?: 'basic' | 'speaking' | 'relationship' | 'taboos'
+): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const state = await dispatcher.reviseOnboardingSummary(feedback, revision, targetStage);
+    return toOnboardingIpcResponse(state);
+  } catch (error) {
+    log.error('handleOnboardingReviseSummary failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** 处理 onboarding:confirm-summary IPC */
+export async function handleOnboardingConfirmSummary(
+  revision: number
+): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const state = await dispatcher.confirmOnboardingSummary(revision);
+    const response = toOnboardingIpcResponse(state);
+    // 确认成功后刷新适配器，使新角色配置立即生效
+    if (state.isCompleted) {
+      refreshAdapters();
+      log.info('onboarding confirmed and locked, adapters refreshed', {
+        fields: { characterId: state.characterId, traceId: state.traceId }
+      });
+    }
+    return response;
+  } catch (error) {
+    log.error('handleOnboardingConfirmSummary failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** 处理 onboarding:submit-answers IPC（V9 结构化卡片回答） */
+export async function handleOnboardingSubmitAnswers(
+  answers: Array<{
+    questionId: string;
+    fieldPaths: string[];
+    answerType: 'text' | 'single_choice' | 'multiple_choice' | 'hybrid';
+    selectedOptionIds?: string[];
+    selectedValues?: unknown[];
+    customText?: string;
+    usedSuggestedAnswer?: boolean;
+  }>,
+  revision: number
+): Promise<OnboardingIpcResponse> {
+  if (!dispatcher) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: 'architecture-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    // IPC schema 已校验 fieldPaths 格式，此处断言为 OnboardingQuestionAnswer[] 供 Graph 使用
+    const state = await dispatcher.submitOnboardingAnswers(
+      answers as Array<import('../services/character-onboarding/schemas').OnboardingQuestionAnswer>,
+      revision
+    );
+    const response = toOnboardingIpcResponse(state);
+    if (state.isCompleted) {
+      refreshAdapters();
+    }
+    return response;
+  } catch (error) {
+    log.error('handleOnboardingSubmitAnswers failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision,
+      isCompleted: false,
+      errorReason: String((error as Error)?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+}
+
+/** 处理 onboarding:suggest IPC（V9 AI 建议答案） */
+export async function handleOnboardingSuggest(
+  questionId: string,
+  revision: number
+): Promise<OnboardingSuggestionDto> {
+  if (!dispatcher) {
+    return { ok: false, suggestion: null, reason: 'architecture-not-ready', traceId: '' };
+  }
+  try {
+    return await dispatcher.suggestAnswer(questionId, revision);
+  } catch (error) {
+    log.error('handleOnboardingSuggest failed', {
+      fields: { error: (error as Error)?.message }
+    });
+    return {
+      ok: false,
+      suggestion: null,
+      reason: String((error as Error)?.message || 'unknown'),
+      traceId: ''
+    };
+  }
 }
 
 /**
@@ -649,6 +1092,8 @@ export function deleteReminder(id: string): { deleted: boolean } {
 /** 角色渲染配置 DTO（Main → Renderer） */
 export interface CharacterRenderConfig {
   characterId: string;
+  /** W6: 角色显示名（从锁定 Profile 读取，未完成向导时为基础角色包名） */
+  characterName: string;
   rendererType: 'spritesheet' | 'placeholder';
   /** 精灵图 URL（pet-character:// 协议） */
   spriteSheetUrl: string;
@@ -679,6 +1124,17 @@ export function getCharacterRenderConfig(): CharacterRenderConfig | null {
   const atlasPath = spritesheetConfig.atlas;
   const metadataPath = spritesheetConfig.metadata;
 
+  // W6: 优先从锁定的 Profile 读取角色显示名，未完成向导时回退到基础角色包名
+  let characterName = pack.manifest.name ?? pack.manifest.id;
+  try {
+    const lockedProfile = characterProfileRepository.getActiveLockedProfile();
+    if (lockedProfile) {
+      characterName = lockedProfile.persona.characterName;
+    }
+  } catch {
+    // 数据库未初始化或无锁定 Profile，使用基础角色包名
+  }
+
   // 使用 SpriteSheetRenderer 加载并校验 metadata
   const { SpriteSheetRenderer } = require('../services/character/SpriteSheetRenderer');
   const renderer = new SpriteSheetRenderer({
@@ -694,6 +1150,7 @@ export function getCharacterRenderConfig(): CharacterRenderConfig | null {
     });
     return {
       characterId,
+      characterName,
       rendererType: 'placeholder',
       spriteSheetUrl: '',
       cellWidth: 192,
@@ -713,6 +1170,7 @@ export function getCharacterRenderConfig(): CharacterRenderConfig | null {
   log.info('character render config generated', {
     fields: {
       characterId,
+      characterName,
       cellSize: `${meta.cellWidth}x${meta.cellHeight}`,
       sheetSize: `${meta.sheetWidth}x${meta.sheetHeight}`,
       rowCount: Object.keys(meta.rows).length
@@ -721,6 +1179,7 @@ export function getCharacterRenderConfig(): CharacterRenderConfig | null {
 
   return {
     characterId,
+    characterName,
     rendererType: 'spritesheet',
     spriteSheetUrl,
     cellWidth: meta.cellWidth,
@@ -779,7 +1238,7 @@ function toUiMemory(row: any): any {
 export function getMemories(memType: string): any[] {
   if (!memoryStore) return [];
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   if (memType === 'shortTerm') {
     // 新架构中短期记忆由 ConversationGraph 在上下文中管理，不持久化到此表
@@ -805,7 +1264,7 @@ export function addMemory(memType: string, content: string, _options?: any): any
   if (!content || !content.trim()) throw new Error('Memory content is empty.');
 
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
   const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   if (memType === 'shortTerm') {
@@ -835,7 +1294,7 @@ export function updateMemory(memType: string, id: string, patch: any): any {
   if (!id) throw new Error('Memory id is required.');
 
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   memoryStore.update(id, {
     content: patch?.content,
@@ -851,7 +1310,7 @@ export function deleteMemory(_memType: string, id: string): any {
   if (!id) throw new Error('Memory id is required.');
 
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   memoryStore.delete(id, { userId, characterId });
   return { deleted: true };
@@ -861,7 +1320,7 @@ export function deleteMemory(_memType: string, id: string): any {
 export function clearMemoriesByType(memType: string): { removed: number } {
   if (!memoryStore) return { removed: 0 };
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   if (memType === 'shortTerm') {
     return { removed: 0 };
@@ -893,7 +1352,7 @@ export function clearMemoriesByType(memType: string): { removed: number } {
 export function clearAllMemoriesNewArch(): { removed: { user: number; longTerm: number; shortTerm: number } } {
   if (!memoryStore) return { removed: { user: 0, longTerm: 0, shortTerm: 0 } };
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   // 分别统计全局和角色记忆数量
   const all = memoryStore.retrieve(userId, characterId, {});
@@ -937,7 +1396,7 @@ export async function handlePlanningMessage(
   }
 
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   return planningRunner.submitMessage({
     userId,
@@ -960,7 +1419,7 @@ export async function handlePlanningConfirm(): Promise<PlanningResponseDTO> {
   // 通过 PlanningGraph 处理确认信号
   return planningRunner.submitMessage({
     userId: getUserId(),
-    characterId: characterPackManager?.getActiveCharacterId() ?? 'default-roxy',
+    characterId: getActiveCharacterId(),
     userInput: '就这样',
     isConfirmation: true
   });
@@ -995,7 +1454,7 @@ export async function handlePlanningManualEdit(payload: {
   // V7 修复：按 scope 隔离查询草案，避免跨用户/角色串扰
   const userId = settingsRepository.get('user_id') ?? 'default-user';
   const characterId = settingsRepository.get('active_character_id')
-    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+    ?? getActiveCharacterId();
   const draftScope = { userId, characterId };
   const draftPlan = planRepository.getDraftPlanByScope(draftScope);
   if (!draftPlan || draftPlan.id !== planId) {
@@ -1045,7 +1504,7 @@ export async function handlePlanningManualEdit(payload: {
   // 直接通过 PlanningGraphRunner 的 submitManualEdit 执行，不调用模型
   return planningRunner.submitManualEdit({
     userId: getUserId(),
-    characterId: characterPackManager?.getActiveCharacterId() ?? 'default-roxy',
+    characterId: getActiveCharacterId(),
     planId,
     agentAction
   });
@@ -1062,7 +1521,7 @@ export async function handlePlanningManualEdit(payload: {
 export function getActivePlan(): any | null {
   const userId = settingsRepository.get('user_id') ?? 'default-user';
   const characterId = settingsRepository.get('active_character_id')
-    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+    ?? getActiveCharacterId();
   const scope = { userId, characterId };
   const localDate = timeService
     ? timeService.getTodayDateString()
@@ -1084,7 +1543,7 @@ export function getActivePlan(): any | null {
 export function getDraftPlan(): any | null {
   const userId = settingsRepository.get('user_id') ?? 'default-user';
   const characterId = settingsRepository.get('active_character_id')
-    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+    ?? getActiveCharacterId();
   const scope = { userId, characterId };
   const plan = planRepository.getDraftPlanByScope(scope);
   if (!plan) return null;
@@ -1109,12 +1568,41 @@ export function getPlanningState(): {
   if (!planningRunner) {
     return { messages: [], phase: 'idle', awaitingConfirmation: false, draftPlan: getDraftPlan() };
   }
-  const state = planningRunner.getPlanningState(getUserId(), characterPackManager?.getActiveCharacterId() ?? 'default-roxy');
+  const state = planningRunner.getPlanningState(getUserId(), getActiveCharacterId());
   return {
     messages: state.messages,
     phase: state.phase,
     awaitingConfirmation: state.awaitingConfirmation,
     draftPlan: state.currentDraft ?? getDraftPlan()
+  };
+}
+
+/** Restore the isolated planning thread for one calendar date without calling a model. */
+export function getPlanningStateForDate(date: string): {
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+  phase: 'idle' | 'asking' | 'drafting' | 'awaiting_confirmation' | 'published';
+  awaitingConfirmation: boolean;
+  draftPlan: any | null;
+} {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) || !planningRunner) {
+    return { messages: [], phase: 'idle', awaitingConfirmation: false, draftPlan: null };
+  }
+  const userId = getUserId();
+  const characterId = getActiveCharacterId();
+  const state = planningRunner.getPlanningState(userId, characterId, `date:${date}`);
+  const plan = planRepository.getPlanByDate({ userId, characterId }, date);
+  const draftPlan = state.currentDraft ?? (plan ? {
+    ...toPlanDraft(
+      { id: plan.id, date: plan.date, tasks: plan.tasks },
+      plan.draft_version ?? 1
+    ),
+    status: plan.status
+  } : null);
+  return {
+    messages: state.messages,
+    phase: state.phase,
+    awaitingConfirmation: state.awaitingConfirmation,
+    draftPlan
   };
 }
 
@@ -1132,7 +1620,7 @@ export function handlePlanningToggleTask(taskId: string): {
   // V7 修复：按 scope + 今天日期过滤，只切换今天的 active 计划任务
   const userId = settingsRepository.get('user_id') ?? 'default-user';
   const characterId = settingsRepository.get('active_character_id')
-    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+    ?? getActiveCharacterId();
   const toggleScope = { userId, characterId };
   const localDate = timeService
     ? timeService.getTodayDateString()
@@ -1181,7 +1669,7 @@ export function getPlanningModelInfo(): {
   // V7 修复：按 scope 隔离查询，避免跨用户/角色串扰
   const userId = settingsRepository.get('user_id') ?? 'default-user';
   const characterId = settingsRepository.get('active_character_id')
-    ?? characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+    ?? getActiveCharacterId();
   const modelScope = { userId, characterId };
 
   // 从最新的 draft/active 计划获取 response_model
@@ -1263,7 +1751,7 @@ export function getCalendarMonth(year: number, month: number): {
     return { ok: false, reason: 'invalid-year-or-month' };
   }
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
   const scope = { userId, characterId };
   const days = planRepository.getPlansForMonth(scope, year, month);
   return { ok: true, days };
@@ -1285,7 +1773,7 @@ export function getCalendarDate(date: string): {
     return { ok: false, reason: 'invalid-date-format' };
   }
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
   const scope = { userId, characterId };
   const plan = planRepository.getPlanByDate(scope, dateStr);
   if (!plan) {
@@ -1293,10 +1781,13 @@ export function getCalendarDate(date: string): {
   }
   return {
     ok: true,
-    plan: toPlanDraft(
-      { id: plan.id, date: plan.date, tasks: plan.tasks },
-      plan.draft_version ?? 1
-    )
+    plan: {
+      ...toPlanDraft(
+        { id: plan.id, date: plan.date, tasks: plan.tasks },
+        plan.draft_version ?? 1
+      ),
+      status: plan.status
+    }
   };
 }
 
@@ -1316,7 +1807,7 @@ export async function handlePlanningMessageWithDate(
   }
 
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
 
   return planningRunner.submitMessage({
     userId,
@@ -1344,7 +1835,7 @@ export function activateTodayPlans(): {
   const { CalendarActivationService } = require('../services/CalendarActivationService');
   const service = new CalendarActivationService(timeService);
   const userId = getUserId();
-  const characterId = characterPackManager?.getActiveCharacterId() ?? 'default-roxy';
+  const characterId = getActiveCharacterId();
   const scope = { userId, characterId };
   const result = service.activateTodayPlans(scope);
   return { ok: true, activatedCount: result.activatedPlans.length };

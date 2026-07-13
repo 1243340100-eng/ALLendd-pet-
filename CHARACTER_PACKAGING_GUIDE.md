@@ -139,5 +139,5 @@ Response emotion selection is default-off. When enabled, every successful normal
 After packaging, test this executable:
 
 ```text
-D:\Documents\展示项目内容\roxy-electron-pet-framework\release\win-unpacked\PetFramework.exe
+D:\Documents\展示项目内容\roxy-electron-pet-framework\release-ui-fix\win-unpacked\PetFramework.exe
 ```

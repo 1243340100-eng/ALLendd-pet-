@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, safeStorage, screen, protocol, net, dialog } = require('electron');
+const { app, BrowserWindow, Menu, Tray: ElectronTray, ipcMain, safeStorage, screen, protocol, net, dialog, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +22,8 @@ const {
   buildPromptBudgetReport
 } = require('./services/token-budget');
 const { classifyResponseEmotion } = require('./services/response-emotion-service');
+const runtimeMaterials = require('./services/runtime-material-service');
+const { clearFrameworkRuntimeData } = require('./services/runtime-reset-service');
 
 // === 新架构集成（src/ → dist/） ===
 // 运行时状态：loading → langgraph_ready | initialization_failed
@@ -156,6 +158,14 @@ protocol.registerSchemesAsPrivileged([{
     supportFetchAPI: true,
     stream: true
   }
+}, {
+  scheme: 'pet-material',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true
+  }
 }]);
 
 /**
@@ -198,6 +208,28 @@ function registerCharacterProtocol() {
   });
 }
 
+/**
+ * 仅允许 renderer 读取由主进程导入到 userData/runtime-materials 的当前素材。
+ * 请求 URL 的 id 和文件名都会和素材库元数据逐项比对，避免读取任意本地路径。
+ */
+function registerMaterialProtocol() {
+  protocol.handle('pet-material', (request) => {
+    const url = new URL(request.url);
+    const materialId = decodeURIComponent(url.hostname);
+    const fileName = decodeURIComponent(url.pathname).replace(/^\//, '');
+    const fullPath = runtimeMaterials.resolveMaterialPath(
+      app.getPath('userData'),
+      materialId,
+      fileName
+    );
+    if (!fullPath) return new Response('Not Found', { status: 404 });
+
+    return new Response(fs.createReadStream(fullPath), {
+      headers: { 'Content-Type': getMimeType(fullPath) }
+    });
+  });
+}
+
 /** 根据文件扩展名返回 MIME 类型 */
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -222,6 +254,12 @@ function sendCharacterRenderConfig() {
   if (!newArchReady || !newArch?.getCharacterRenderConfig) return;
   try {
     const config = newArch.getCharacterRenderConfig();
+    const activeMaterial = runtimeMaterials.getActiveMaterial(app.getPath('userData'));
+    if (config && activeMaterial) {
+      config.spriteSheetUrl = `pet-material://${encodeURIComponent(activeMaterial.id)}/${encodeURIComponent(activeMaterial.fileName)}`;
+      config.visualMaterialId = activeMaterial.id;
+      config.visualMaterialName = activeMaterial.name;
+    }
     if (config && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('character-config', config);
       console.log('[integration] character config sent to renderer:', config.characterId);
@@ -309,7 +347,8 @@ function rejectAllPendingAcks() {
 async function sendChatMessageNewArch(payload) {
   if (!newArch || !newArchReady) throw new Error('new architecture not ready');
   const userId = newArch.getUserId?.() || 'default-user';
-  const characterId = (newArch.getCharacterPackManager?.()?.getActiveCharacterId?.()) || 'default';
+  // W5: 统一从 settings.active_character_id 读取角色 ID（与计划/记忆/提醒保持同一 scope）
+  const characterId = newArch.getActiveCharacterId?.() || 'default';
   const message = String(payload?.message || '').trim();
   if (!message) throw new Error('empty message');
 
@@ -346,10 +385,65 @@ let fullscreenProbeBuffer = '';
 let hiddenForFullscreen = false;
 let isQuitting = false;
 let safeShellService = null;
+let tray = null;
+let activePlanningTargetDate = '';
+let factoryResetInProgress = false;
 
 const startSize = { width: 300, height: 360 };
 const minScale = 0.35;
 const maxScale = 1.6;
+let baseWindowBounds = null;
+let bubbleSpaceRefCount = 0;
+let bubbleExtraWidth = 0;
+let bubbleExtraHeight = 0;
+let panelExtraHeight = 0;
+let planningExtraHeight = 0;
+let layoutApplyScheduled = false;
+let lastAppliedLayoutBounds = null;
+
+function boundsAreClose(a, b, threshold = 2) {
+  return !!a && !!b
+    && Math.abs(a.x - b.x) <= threshold
+    && Math.abs(a.y - b.y) <= threshold
+    && Math.abs(a.width - b.width) <= threshold
+    && Math.abs(a.height - b.height) <= threshold;
+}
+
+/**
+ * All temporary UI space is derived from one stable base rectangle. This avoids
+ * the old bubble/chat/planning stacks restoring stale bounds over each other.
+ * The base rectangle's right and bottom edges stay fixed, so the pet does not
+ * move when transparent space is added to its left or above it.
+ */
+function applyWindowLayoutNow() {
+  layoutApplyScheduled = false;
+  if (!mainWindow || mainWindow.isDestroyed() || !baseWindowBounds) return;
+
+  const workArea = screen.getDisplayMatching(baseWindowBounds).workArea;
+  const requestedWidth = bubbleSpaceRefCount > 0 ? Math.max(0, bubbleExtraWidth) : 0;
+  const requestedHeight = Math.max(0, bubbleExtraHeight, panelExtraHeight, planningExtraHeight);
+  const widthExtra = Math.min(requestedWidth, Math.max(0, baseWindowBounds.x - workArea.x));
+  const heightExtra = Math.min(requestedHeight, Math.max(0, baseWindowBounds.y - workArea.y));
+  const target = {
+    x: baseWindowBounds.x - widthExtra,
+    y: baseWindowBounds.y - heightExtra,
+    width: baseWindowBounds.width + widthExtra,
+    height: baseWindowBounds.height + heightExtra
+  };
+
+  if (boundsAreClose(mainWindow.getBounds(), target)) {
+    lastAppliedLayoutBounds = target;
+    return;
+  }
+  lastAppliedLayoutBounds = target;
+  mainWindow.setBounds(target, false);
+}
+
+function scheduleWindowLayout() {
+  if (layoutApplyScheduled) return;
+  layoutApplyScheduled = true;
+  setImmediate(applyWindowLayoutNow);
+}
 const defaultApiConfig = {
   provider: 'deepseek',
   endpoint: 'https://api.deepseek.com/v1/chat/completions',
@@ -397,6 +491,53 @@ const text = {
   quit: '\u9000\u51fa'
 };
 
+function createTray() {
+  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+  tray = new ElectronTray(iconPath);
+  tray.setToolTip('PetFramework 桌宠');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '显示窗口',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    },
+    {
+      label: '隐藏窗口',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.hide();
+      }
+    },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setContextMenu(contextMenu);
+
+  // 单击托盘图标：显示/聚焦窗口
+  tray.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isVisible() && mainWindow.isFocused()) {
+      mainWindow.hide();
+    } else {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 function createWindow() {
   const workArea = screen.getPrimaryDisplay().workArea;
 
@@ -422,6 +563,7 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
+  baseWindowBounds = { ...mainWindow.getBounds() };
   lastWindowX = mainWindow.getBounds().x;
 
   // 窗口加载完成后发布 startup 事件（触发 Onboarding 或日报）
@@ -436,7 +578,28 @@ function createWindow() {
   });
 
   mainWindow.on('move', () => {
-    const { x } = mainWindow.getBounds();
+    const bounds = mainWindow.getBounds();
+    const { x } = bounds;
+    const isProgrammaticLayoutMove = boundsAreClose(bounds, lastAppliedLayoutBounds);
+    // A native drag moves the expanded transparent canvas. Reconstruct the
+    // stable base rectangle so later panel/bubble collapse keeps the pet at the
+    // position where the user dropped it. Ignore our own setBounds result.
+    if (baseWindowBounds && !isProgrammaticLayoutMove) {
+      const widthExtra = Math.max(0, bounds.width - baseWindowBounds.width);
+      const heightExtra = Math.max(0, bounds.height - baseWindowBounds.height);
+      baseWindowBounds = {
+        ...baseWindowBounds,
+        x: bounds.x + widthExtra,
+        y: bounds.y + heightExtra
+      };
+      // Once a native drag diverges from the last programmatic target, keep
+      // tracking every subsequent move event until the user releases it.
+      lastAppliedLayoutBounds = null;
+    }
+    if (isProgrammaticLayoutMove) {
+      lastWindowX = x;
+      return;
+    }
     const dx = x - lastWindowX;
     if (Math.abs(dx) >= 2) {
       dragAnimating = true;
@@ -498,6 +661,14 @@ function createWindow() {
 
   startFullscreenWatcher();
 
+  // 拦截窗口关闭：有托盘时隐藏到托盘而非退出，仅真正退出时才关闭
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   // 窗口关闭/崩溃时，拒绝所有 pending ACK，避免 Dispatcher 永久等待
   mainWindow.on('closed', () => {
     rejectAllPendingAcks();
@@ -515,14 +686,15 @@ function send(channel, payload) {
 
 function tuckIntoCorner() {
   if (!mainWindow) return;
-  const bounds = mainWindow.getBounds();
+  const bounds = baseWindowBounds || mainWindow.getBounds();
   const workArea = screen.getDisplayMatching(bounds).workArea;
-  mainWindow.setBounds({
+  baseWindowBounds = {
     x: workArea.x + workArea.width - bounds.width - 16,
     y: workArea.y + workArea.height - bounds.height - 16,
     width: bounds.width,
     height: bounds.height
-  });
+  };
+  applyWindowLayoutNow();
 }
 
 function isAutostartEnabled() {
@@ -538,6 +710,45 @@ function setAutostartEnabled(enabled) {
 
 function getApiConfigPath() {
   return path.join(app.getPath('userData'), 'api-config.json');
+}
+
+/**
+ * 恢复到可验收的首次启动状态。
+ * 只清理 userData 内由本框架创建的运行时文件；应用 resources 中的默认角色包
+ * （包括 Blue 的动作图）不会被触及。完成后重启，确保 LangGraph 从全新 SQLite
+ * 数据库执行初始化，而不会复用仍在内存中的 dispatcher 或 checkpoint。
+ */
+async function resetFrameworkRuntimeData() {
+  if (factoryResetInProgress) {
+    return { ok: false, error: '正在恢复初始状态，请稍候。' };
+  }
+  factoryResetInProgress = true;
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      await mainWindow.webContents.session.clearStorageData();
+    }
+
+    // 先停止 Worker 并关闭 SQLite，避免 WAL 文件仍被占用。
+    safeShellService?.shutdown();
+    if (newArch?.shutdownNewArchitecture) {
+      newArch.shutdownNewArchitecture();
+    }
+    newArchReady = false;
+    archState = 'loading';
+    archInitError = null;
+    sessionApiKey = '';
+
+    const result = clearFrameworkRuntimeData(app.getPath('userData'));
+    setTimeout(() => {
+      app.relaunch({ args: process.argv.slice(1) });
+      app.exit(0);
+    }, 350);
+    return { ok: true, restarting: true, removed: result.removed };
+  } catch (error) {
+    factoryResetInProgress = false;
+    console.error('[runtime:reset-user-data] failed:', error?.message || error);
+    return { ok: false, error: `恢复初始状态失败：${error?.message || '未知错误'}` };
+  }
 }
 
 const KNOWN_PROVIDER_ENDPOINTS = {
@@ -1699,34 +1910,7 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
   const validated = validateIpc('set-window-scale', scale);
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const next = Math.max(minScale, Math.min(maxScale, Number(validated) || 1));
-
-  // 记录当前已扩展的空间，缩放后需要保持
-  const currentBounds = mainWindow.getBounds();
-  const planningExtra = planningSpaceOriginalBounds
-    ? currentBounds.height - planningSpaceOriginalBounds.height
-    : 0;
-  const chatExtra = chatSpaceOriginalBounds
-    ? currentBounds.height - chatSpaceOriginalBounds.height
-    : 0;
-  const bubbleExtra = bubbleSpaceOriginalBounds
-    ? currentBounds.width - bubbleSpaceOriginalBounds.width
-    : 0;
-
-  // 先恢复到未扩展的基础 bounds，避免缩放计算被扩展后的尺寸干扰
-  if (planningSpaceOriginalBounds) {
-    mainWindow.setBounds(planningSpaceOriginalBounds);
-    planningSpaceOriginalBounds = null;
-  }
-  if (chatSpaceOriginalBounds) {
-    mainWindow.setBounds(chatSpaceOriginalBounds);
-    chatSpaceOriginalBounds = null;
-  }
-  if (bubbleSpaceOriginalBounds) {
-    mainWindow.setBounds(bubbleSpaceOriginalBounds);
-    bubbleSpaceOriginalBounds = null;
-  }
-
-  const bounds = mainWindow.getBounds();
+  const bounds = baseWindowBounds || mainWindow.getBounds();
   const nextWidth = Math.round(startSize.width * next);
   const nextHeight = Math.round(startSize.height * next);
   const anchorX = bounds.x + Math.round(bounds.width / 2);
@@ -1740,28 +1924,8 @@ ipcMain.handle('set-window-scale', (_event, scale) => {
     workArea.y,
     Math.min(workArea.y + workArea.height - nextHeight, anchorY - nextHeight)
   );
-  const newBaseBounds = { x, y, width: nextWidth, height: nextHeight };
-  mainWindow.setBounds(newBaseBounds);
-
-  // 若缩放前存在计划/聊天/气泡扩展，按新的基础尺寸重新应用，防止聊天栏/计划栏错位或被遮挡
-  if (planningExtra > 0) {
-    planningSpaceOriginalBounds = { ...newBaseBounds };
-    const newY = Math.max(workArea.y, newBaseBounds.y - planningExtra);
-    const newHeight = newBaseBounds.height + (newBaseBounds.y - newY);
-    mainWindow.setBounds({ ...newBaseBounds, y: newY, height: newHeight });
-  }
-  if (chatExtra > 0) {
-    chatSpaceOriginalBounds = { ...newBaseBounds };
-    const newY = Math.max(workArea.y, newBaseBounds.y - chatExtra);
-    const newHeight = newBaseBounds.height + (newBaseBounds.y - newY);
-    mainWindow.setBounds({ ...newBaseBounds, y: newY, height: newHeight });
-  }
-  if (bubbleExtra > 0) {
-    bubbleSpaceOriginalBounds = { ...newBaseBounds };
-    const newX = Math.max(workArea.x, newBaseBounds.x - bubbleExtra);
-    const newWidth = newBaseBounds.width + (newBaseBounds.x - newX);
-    mainWindow.setBounds({ ...newBaseBounds, x: newX, width: newWidth });
-  }
+  baseWindowBounds = { x, y, width: nextWidth, height: nextHeight };
+  applyWindowLayoutNow();
 });
 
 ipcMain.handle('window:focus', () => {
@@ -1791,8 +1955,76 @@ ipcMain.handle('api-config-save', (_event, nextConfig) => {
   return saveApiConfig(validated);
 });
 
+// ===== 运行时动作素材库 =====
+// Renderer 不提交文件路径；主进程统一打开选择器、校验图集尺寸并复制到 userData。
+ipcMain.handle('material:list', () => runtimeMaterials.listMaterials(app.getPath('userData')));
+
+ipcMain.handle('material:import', async () => {
+  const selection = await dialog.showOpenDialog(mainWindow, {
+    title: '导入动作图集',
+    properties: ['openFile'],
+    filters: [
+      { name: '动作图集（PNG / WebP）', extensions: ['png', 'webp'] }
+    ]
+  });
+  if (selection.canceled || !selection.filePaths?.[0]) {
+    return { ok: false, cancelled: true };
+  }
+  try {
+    const result = runtimeMaterials.copyImportedSpriteSheet({
+      userDataDir: app.getPath('userData'),
+      sourcePath: selection.filePaths[0],
+      nativeImage
+    });
+    if (result.ok) sendCharacterRenderConfig();
+    return result;
+  } catch (error) {
+    console.error('[material:import] failed:', error?.message || error);
+    return { ok: false, error: `导入失败：${error?.message || '未知错误'}` };
+  }
+});
+
+ipcMain.handle('material:apply', (_event, materialId) => {
+  const validatedId = validateIpc('material:apply', materialId);
+  const result = runtimeMaterials.applyMaterial(app.getPath('userData'), validatedId);
+  if (result.ok) sendCharacterRenderConfig();
+  return result;
+});
+
+ipcMain.handle('material:restore-default', () => {
+  const result = runtimeMaterials.restoreDefaultMaterial(app.getPath('userData'));
+  if (result.ok) sendCharacterRenderConfig();
+  return result;
+});
+
+ipcMain.handle('runtime:reset-user-data', () => resetFrameworkRuntimeData());
+
+/**
+ * I5: 检查 onboarding 是否完成。未完成时返回错误对象，完成时返回 null。
+ * 用于拦截 planning/calendar/memory/reminder 等写操作 IPC。
+ */
+function requireOnboarding() {
+  if (newArchReady && newArch && typeof newArch.isOnboardingCompleted === 'function') {
+    if (!newArch.isOnboardingCompleted()) {
+      return { error: 'onboarding-required', message: '请先完成角色初始化向导' };
+    }
+  }
+  return null;
+}
+
 ipcMain.handle('chat-send', async (_event, payload) => {
   const validated = validateIpc('chat-send', payload);
+  // W4: 未完成角色初始化的用户不得进入聊天
+  if (newArchReady && newArch && typeof newArch.isOnboardingCompleted === 'function') {
+    if (!newArch.isOnboardingCompleted()) {
+      return {
+        reply: '请先完成角色初始化向导后再开始聊天',
+        model: 'blocked',
+        runtime: 'blocked',
+        error: 'onboarding-required'
+      };
+    }
+  }
   // 新架构就绪时，ConversationGraph 单轮报错不得静默改走旧 sendChatMessage
   if (archState === 'langgraph_ready' && newArchReady) {
     try {
@@ -1838,6 +2070,322 @@ ipcMain.handle('onboarding-submit', async (_event, preferences) => {
   }
 });
 
+// ===== V8 角色初始化向导 IPC =====
+// Renderer 通过这 5 个通道驱动 V8 Onboarding 流程：
+// - get-state：只读，恢复展示信息
+// - start：首次或重置后启动
+// - submit-answer：用户提交自然语言回答
+// - revise-summary：review 阶段返回修改
+// - confirm-summary：确认摘要，触发 compile + lock
+// 安全约束：Renderer 不能提交完整 Draft / Persona / isLocked / onboardingCompleted / 配置版本。
+
+ipcMain.handle('onboarding:get-state', async () => {
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    return await newArch.handleOnboardingGetState();
+  } catch (error) {
+    console.error('[onboarding:get-state] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+ipcMain.handle('onboarding:start', async (_event, payload) => {
+  const validated = validateIpc('onboarding:start', payload);
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    return await newArch.handleOnboardingStart(validated.revision);
+  } catch (error) {
+    console.error('[onboarding:start] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+ipcMain.handle('onboarding:submit-answer', async (_event, payload) => {
+  const validated = validateIpc('onboarding:submit-answer', payload);
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    return await newArch.handleOnboardingSubmitAnswer(validated.answer, validated.revision);
+  } catch (error) {
+    console.error('[onboarding:submit-answer] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+ipcMain.handle('onboarding:revise-summary', async (_event, payload) => {
+  const validated = validateIpc('onboarding:revise-summary', payload);
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    return await newArch.handleOnboardingReviseSummary(validated.feedback, validated.revision, validated.targetStage);
+  } catch (error) {
+    console.error('[onboarding:revise-summary] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+ipcMain.handle('onboarding:confirm-summary', async (_event, payload) => {
+  const validated = validateIpc('onboarding:confirm-summary', payload);
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    const result = await newArch.handleOnboardingConfirmSummary(validated.revision);
+    // W6: 确认成功后重新发送 character-config，让 UI 使用新的角色名
+    if (result && result.isCompleted) {
+      sendCharacterRenderConfig();
+    }
+    return result;
+  } catch (error) {
+    console.error('[onboarding:confirm-summary] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+// ===== V9 问题卡片 IPC =====
+// submit-answers：用户提交结构化问题卡片回答（支持纯选项/自由文本/混合）
+// suggest：用户请求 AI 建议答案（仅 text/hybrid 题型）
+ipcMain.handle('onboarding:submit-answers', async (_event, payload) => {
+  const validated = validateIpc('onboarding:submit-answers', payload);
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    return await newArch.handleOnboardingSubmitAnswers(validated.answers, validated.revision);
+  } catch (error) {
+    console.error('[onboarding:submit-answers] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+ipcMain.handle('onboarding:suggest', async (_event, payload) => {
+  const validated = validateIpc('onboarding:suggest', payload);
+  if (!newArchReady || !newArch) {
+    return {
+      ok: false,
+      suggestion: null,
+      reason: 'new-arch-not-ready',
+      traceId: ''
+    };
+  }
+  try {
+    return await newArch.handleOnboardingSuggest(validated.questionId, validated.revision);
+  } catch (error) {
+    console.error('[onboarding:suggest] failed:', error?.message || error);
+    return {
+      ok: false,
+      suggestion: null,
+      reason: String(error?.message || 'unknown'),
+      traceId: ''
+    };
+  }
+});
+
+// ===== 重设人物性格 =====
+// 解锁当前角色、清除 onboarding 状态、重新启动向导
+ipcMain.handle('onboarding:reset', async () => {
+  if (!newArchReady || !newArch) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  try {
+    return await newArch.handleOnboardingReset();
+  } catch (error) {
+    console.error('[onboarding:reset] failed:', error?.message || error);
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      currentQuestions: [],
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: 0,
+      isCompleted: false,
+      errorReason: String(error?.message || 'unknown'),
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+});
+
+// ===== P2: pendingAnswers 临时保存/清除 =====
+ipcMain.handle('onboarding:save-pending-answers', async (_event, payload) => {
+  const validated = validateIpc('onboarding:save-pending-answers', payload);
+  if (!newArchReady || !newArch) {
+    return { ok: false, reason: 'new-arch-not-ready' };
+  }
+  try {
+    return newArch.handleOnboardingSavePendingAnswers(validated.answers, validated.revision);
+  } catch (error) {
+    console.error('[onboarding:save-pending-answers] failed:', error?.message || error);
+    return { ok: false, reason: String(error?.message || 'unknown') };
+  }
+});
+
+ipcMain.handle('onboarding:clear-pending-answers', async (_event, payload) => {
+  const validated = validateIpc('onboarding:clear-pending-answers', payload);
+  if (!newArchReady || !newArch) {
+    return { ok: false, reason: 'new-arch-not-ready' };
+  }
+  try {
+    return newArch.handleOnboardingClearPendingAnswers(validated.revision);
+  } catch (error) {
+    console.error('[onboarding:clear-pending-answers] failed:', error?.message || error);
+    return { ok: false, reason: String(error?.message || 'unknown') };
+  }
+});
+
 // V1 不包含命令执行（架构计划明确禁止）。
 // Safe Shell IPC 保留接口但始终返回禁用状态，避免渲染进程调用时崩溃。
 ipcMain.handle('safe-shell:interpret', () => ({
@@ -1845,9 +2393,7 @@ ipcMain.handle('safe-shell:interpret', () => ({
   action: null,
   ok: false
 }));
-
 ipcMain.handle('safe-shell:confirm', () => ({ ok: false, reply: '命令执行功能在 V1 中不可用。' }));
-
 ipcMain.handle('safe-shell:cancel', () => ({ ok: true }));
 
 ipcMain.handle('safe-shell:get-settings', () => ({
@@ -1918,6 +2464,7 @@ ipcMain.handle('reminder:list', () => {
 });
 
 ipcMain.handle('reminder:delete', (_event, id) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   validateIpc('reminder:delete', id);
   if (!newArchReady || !newArch) return { deleted: false };
   try {
@@ -1942,6 +2489,7 @@ ipcMain.handle('memory:list', (_event, type) => {
 });
 
 ipcMain.handle('memory:add', (_event, ...args) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   const validated = validateIpc('memory:add', args);
   const memType = String(validated[0] || '');
   const content = String(validated[1] || '');
@@ -1953,6 +2501,7 @@ ipcMain.handle('memory:add', (_event, ...args) => {
 });
 
 ipcMain.handle('memory:update', (_event, type, id, patch) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   const validated = validateIpc('memory:update', [type, id, patch]);
   const memType = String(validated[0] || '');
   const memId = String(validated[1] || '');
@@ -1964,6 +2513,7 @@ ipcMain.handle('memory:update', (_event, type, id, patch) => {
 });
 
 ipcMain.handle('memory:delete', (_event, type, id) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   const validated = validateIpc('memory:delete', [type, id]);
   const memType = String(validated[0] || '');
   const memId = String(validated[1] || '');
@@ -1974,12 +2524,14 @@ ipcMain.handle('memory:delete', (_event, type, id) => {
 });
 
 ipcMain.handle('memory:clear-expired-short-term', () => {
+  const guard = requireOnboarding(); if (guard) return guard;
   // 新架构中短期记忆不持久化，无需清理
   if (newArchReady) return { removed: 0 };
   return memoryService.clearExpiredShortTermMemories(app);
 });
 
 ipcMain.handle('memory:clear-type', (_event, type) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   const validated = validateIpc('memory:clear-type', type);
   const memType = String(validated || '');
   if (newArchReady && newArch?.clearMemoriesByType) {
@@ -1989,6 +2541,7 @@ ipcMain.handle('memory:clear-type', (_event, type) => {
 });
 
 ipcMain.handle('memory:clear-all', () => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (newArchReady && newArch?.clearAllMemoriesNewArch) {
     try { return newArch.clearAllMemoriesNewArch(); } catch (e) { console.error('[memory:clear-all]', e?.message); throw e; }
   }
@@ -2025,6 +2578,7 @@ ipcMain.handle('memory:detect-explicit-intent', (_event, textValue) => (
 ));
 
 ipcMain.handle('memory:analyze-and-apply', (_event, textValue) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   // 新架构就绪时，记忆由 ConversationGraph 和 Reflection 统一处理（SQLite），
   // 不再调用旧版记忆分析（写入 pet-data.json），避免双系统数据分裂。
   if (newArchReady) {
@@ -2070,134 +2624,48 @@ ipcMain.on('drag-animation-stop', () => {
   }, 120);
 });
 
-// 气泡空间扩展：reminder bubble 显示时向左扩大窗口宽度，消失后恢复
-let bubbleSpaceOriginalBounds = null;
-let bubbleSpaceRefCount = 0;
-
+// UI space requests share the single layout manager above. Requests may arrive
+// back-to-back while switching panels, so layout application is coalesced.
 ipcMain.on('request-bubble-space', (_event, extraWidth) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  // 第一次请求时保存原始 bounds，后续请求不覆盖；使用引用计数防止
-  // 计划气泡与临时提醒气泡互相冲掉窗口空间
-  if (bubbleSpaceRefCount === 0) {
-    // 若当前正处于计划模式扩展中，以未扩展的原始 bounds 为基准，避免后续恢复错乱
-    bubbleSpaceOriginalBounds = planningSpaceOriginalBounds
-      ? { ...planningSpaceOriginalBounds }
-      : { ...mainWindow.getBounds() };
-  }
   bubbleSpaceRefCount++;
-  const workArea = screen.getDisplayMatching(bubbleSpaceOriginalBounds).workArea;
-  const safetyMargin = 16;
-  const totalExtra = Math.round(Number(extraWidth) || 0) + safetyMargin;
-  // 向左扩展窗口（reminder bubble 在桌宠左侧）
-  let newX = bubbleSpaceOriginalBounds.x - totalExtra;
-  let newWidth = bubbleSpaceOriginalBounds.width + totalExtra;
-  // 不能超出屏幕左边界
-  if (newX < workArea.x) {
-    newWidth -= (workArea.x - newX);
-    newX = workArea.x;
-  }
-  const targetBounds = {
-    x: newX,
-    y: bubbleSpaceOriginalBounds.y,
-    width: newWidth,
-    height: bubbleSpaceOriginalBounds.height
-  };
-  const currentBounds = mainWindow.getBounds();
-  // 若当前窗口已与目标 bounds 一致（允许 2px 误差），不再重复 setBounds，
-  // 避免重复展开/收起提醒栏时桌宠产生微动
-  const threshold = 2;
-  if (
-    Math.abs(currentBounds.x - targetBounds.x) <= threshold &&
-    Math.abs(currentBounds.y - targetBounds.y) <= threshold &&
-    Math.abs(currentBounds.width - targetBounds.width) <= threshold &&
-    Math.abs(currentBounds.height - targetBounds.height) <= threshold
-  ) {
-    return;
-  }
-  mainWindow.setBounds(targetBounds);
+  bubbleExtraWidth = Math.max(bubbleExtraWidth, Math.round(Number(extraWidth) || 0) + 24);
+  bubbleExtraHeight = Math.max(bubbleExtraHeight, 420);
+  scheduleWindowLayout();
 });
 
 ipcMain.on('release-bubble-space', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   bubbleSpaceRefCount = Math.max(0, bubbleSpaceRefCount - 1);
-  if (bubbleSpaceRefCount === 0 && bubbleSpaceOriginalBounds) {
-    mainWindow.setBounds(bubbleSpaceOriginalBounds);
-    bubbleSpaceOriginalBounds = null;
+  if (bubbleSpaceRefCount === 0) {
+    bubbleExtraWidth = 0;
+    bubbleExtraHeight = 0;
   }
+  scheduleWindowLayout();
 });
-
-// 聊天面板空间扩展：普通聊天模式时向上扩大窗口高度，关闭后恢复
-let chatSpaceOriginalBounds = null;
 
 ipcMain.on('request-chat-space', (_event, extraHeight) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (!chatSpaceOriginalBounds) {
-    // 若当前已处于其他扩展中，以未扩展的原始 bounds 为基准
-    chatSpaceOriginalBounds = planningSpaceOriginalBounds
-      ? { ...planningSpaceOriginalBounds }
-      : bubbleSpaceOriginalBounds
-        ? { ...bubbleSpaceOriginalBounds }
-        : { ...mainWindow.getBounds() };
-  }
-  const workArea = screen.getDisplayMatching(chatSpaceOriginalBounds).workArea;
-  const safetyMargin = 24;
-  const totalExtra = Math.round(Number(extraHeight) || 0) + safetyMargin;
-  let newY = chatSpaceOriginalBounds.y - totalExtra;
-  let newHeight = chatSpaceOriginalBounds.height + totalExtra;
-  if (newY < workArea.y) {
-    newHeight -= (workArea.y - newY);
-    newY = workArea.y;
-  }
-  mainWindow.setBounds({
-    x: chatSpaceOriginalBounds.x,
-    y: newY,
-    width: chatSpaceOriginalBounds.width,
-    height: newHeight
-  });
+  panelExtraHeight = Math.max(0, Math.round(Number(extraHeight) || 0) + 24);
+  scheduleWindowLayout();
 });
 
 ipcMain.on('release-chat-space', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (chatSpaceOriginalBounds) {
-    mainWindow.setBounds(chatSpaceOriginalBounds);
-    chatSpaceOriginalBounds = null;
-  }
+  panelExtraHeight = 0;
+  scheduleWindowLayout();
 });
-
-// 计划面板空间扩展：进入计划模式时向上扩大窗口高度，退出后恢复
-let planningSpaceOriginalBounds = null;
 
 ipcMain.on('request-planning-space', (_event, extraHeight) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (!planningSpaceOriginalBounds) {
-    // 若当前正处于气泡空间扩展中，以未扩展的原始 bounds 为基准
-    planningSpaceOriginalBounds = bubbleSpaceOriginalBounds
-      ? { ...bubbleSpaceOriginalBounds }
-      : { ...mainWindow.getBounds() };
-  }
-  const workArea = screen.getDisplayMatching(planningSpaceOriginalBounds).workArea;
-  const safetyMargin = 24;
-  const totalExtra = Math.round(Number(extraHeight) || 0) + safetyMargin;
-  let newY = planningSpaceOriginalBounds.y - totalExtra;
-  let newHeight = planningSpaceOriginalBounds.height + totalExtra;
-  if (newY < workArea.y) {
-    newHeight -= (workArea.y - newY);
-    newY = workArea.y;
-  }
-  mainWindow.setBounds({
-    x: planningSpaceOriginalBounds.x,
-    y: newY,
-    width: planningSpaceOriginalBounds.width,
-    height: newHeight
-  });
+  planningExtraHeight = Math.max(0, Math.round(Number(extraHeight) || 0) + 24);
+  scheduleWindowLayout();
 });
 
 ipcMain.on('release-planning-space', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (planningSpaceOriginalBounds) {
-    mainWindow.setBounds(planningSpaceOriginalBounds);
-    planningSpaceOriginalBounds = null;
-  }
+  planningExtraHeight = 0;
+  scheduleWindowLayout();
 });
 
 // ===== 计划任务（Planning Bubble）=====
@@ -2210,9 +2678,11 @@ function planningArchReady() {
 }
 
 ipcMain.handle('planning:start', async () => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
+  activePlanningTargetDate = '';
   const activePlan = newArch.getActivePlan();
   if (activePlan) {
     return { ok: true, activePlan };
@@ -2233,6 +2703,7 @@ ipcMain.handle('planning:start', async () => {
 });
 
 ipcMain.handle('planning:submit-message', async (_event, text) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
@@ -2241,7 +2712,9 @@ ipcMain.handle('planning:submit-message', async (_event, text) => {
     return { ok: false, reason: 'empty-message' };
   }
   try {
-    const dto = await newArch.handlePlanningMessage(userInput, false);
+    const dto = activePlanningTargetDate
+      ? await newArch.handlePlanningMessageWithDate(userInput, activePlanningTargetDate, false)
+      : await newArch.handlePlanningMessage(userInput, false);
     return dto;
   } catch (error) {
     return { ok: false, reason: error?.message || 'unknown-error' };
@@ -2249,11 +2722,14 @@ ipcMain.handle('planning:submit-message', async (_event, text) => {
 });
 
 ipcMain.handle('planning:confirm', async () => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
   try {
-    const dto = await newArch.handlePlanningConfirm();
+    const dto = activePlanningTargetDate
+      ? await newArch.handlePlanningMessageWithDate('确认发布计划', activePlanningTargetDate, true)
+      : await newArch.handlePlanningConfirm();
     return dto;
   } catch (error) {
     return { ok: false, reason: error?.message || 'unknown-error' };
@@ -2268,6 +2744,7 @@ ipcMain.handle('planning:confirm', async () => {
  * isManualEdit 必须实际传入并使用。
  */
 ipcMain.handle('planning:update-draft', async (_event, payload) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
@@ -2280,6 +2757,7 @@ ipcMain.handle('planning:update-draft', async (_event, payload) => {
 });
 
 ipcMain.handle('planning:toggle-task', async (_event, taskId) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
@@ -2357,6 +2835,7 @@ ipcMain.handle('calendar:get-date', async (_event, date) => {
  * 用于"为这一天制定计划"入口，预先设置 targetDate 和 planningThreadId。
  */
 ipcMain.handle('calendar:open-planning', async (_event, targetDate, userInput) => {
+  const guard = requireOnboarding(); if (guard) return guard;
   if (!planningArchReady()) {
     return { ok: false, reason: 'architecture-not-ready' };
   }
@@ -2365,9 +2844,11 @@ ipcMain.handle('calendar:open-planning', async (_event, targetDate, userInput) =
     return { ok: false, reason: 'invalid-date-format' };
   }
   const message = String(userInput || '').trim();
+  activePlanningTargetDate = date;
   if (!message) {
-    // 只打开计划模式，不发送消息
-    return { ok: true, targetDate: date };
+    // Restore the selected date's isolated thread without a model call.
+    const state = newArch.getPlanningStateForDate(date);
+    return { ok: true, targetDate: date, ...state };
   }
   try {
     const dto = await newArch.handlePlanningMessageWithDate(message, date, false);
@@ -2395,13 +2876,16 @@ app.whenReady().then(() => {
   // 将 pet-character://<characterId>/<relative-path> 解析为角色包目录内的文件
   // 限制访问在当前激活角色包目录内，防止路径穿越
   registerCharacterProtocol();
+  registerMaterialProtocol();
 
   createWindow();
+  createTray();
 });
 
 app.on('before-quit', () => {
   isQuitting = true;
   stopFullscreenWatcher();
+  if (tray) { tray.destroy(); tray = null; }
   safeShellService?.shutdown();
   if (newArch) {
     try { newArch.shutdownNewArchitecture(); } catch { /* 忽略关闭错误 */ }

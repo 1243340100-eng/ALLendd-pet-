@@ -1,11 +1,11 @@
-# Roxy 桌宠项目结构说明
+# Blue 默认桌宠项目结构说明
 
 ## 主要目录
 
 - `app/`：Electron 应用源码，打包时会进入 `app.asar`。
-- `app/assets/`：桌宠动画资源，目前使用 `roxy-spritesheet.webp`。
+- `app/assets/`：桌宠动画资源；默认 Blue 使用 `blue-spritesheet.webp`，角色包使用 `character-packs/default/spritesheet/atlas.webp`。
 - `app/services/`：数据、记忆、Prompt、Token、好感度等服务模块。
-- `release/win-unpacked/`：当前 Windows 构建目录，用于本机测试。
+- `release-ui-fix/win-unpacked/`：当前 Windows 构建目录，用于本机测试。
 - `node_modules/`：依赖目录，不要复制进框架模板。
 
 ## 核心文件
@@ -21,7 +21,7 @@
 
 - `app/services/pet-data-store.js`：本地数据底座，使用 Electron `userData` 下的 `pet-data.json`。
 - `app/services/memory-service.js`：用户记忆、长期记忆、短期记忆的增删改查和显式记忆意图识别。
-- `app/services/prompt-builder.js`：Roxy 的动态 Prompt 构建、相关记忆选择和关系状态提示。
+- `app/services/prompt-builder.js`：当前角色的动态 Prompt 构建、相关记忆选择和关系状态提示。
 - `app/services/token-budget.js`：Prompt、记忆、history、用户输入和回复长度预算。
 - `app/services/affection-service.js`：好感度分数、事件、档位、防刷和 Prompt 提示。
 - `app/services/safe-shell-service.js`：自然语言到固定只读命令的本地解析、工作目录限制、白名单复核、一次性确认和受限 PowerShell 执行。
@@ -69,9 +69,24 @@ loading → langgraph_ready | initialization_failed
 - `app.asar` 内必须包含 `node_modules/@langchain/core/`、`node_modules/@langchain/langgraph/`、`node_modules/zod-to-json-schema/`。
 - 可通过 `npm.cmd run test:packaged-new-arch` 自动验证打包产物是否包含上述依赖并实际启动新架构。
 
+## 运行时动作素材与验收重置
+
+- 状态面板提供“动作素材库”子面板。导入行为由主进程通过系统文件选择器完成，Renderer 不接收也不读取任意本地路径。
+- 当前素材格式固定为 Blue 默认动作语义：PNG 或 WebP、`1536 × 1872` 像素、`8 × 9` 格、每格 `192 × 208`。导入后复制到 `userData/runtime-materials/`，并经 `pet-material://` 受限协议作为**视觉覆盖**加载；角色包、人设和默认 Blue 图集不会被改写。
+- `runtime:reset-user-data` 会先停止 LangGraph Scheduler/Reflection Worker、关闭 SQLite，再清除 `userData` 内的数据库、旧迁移 JSON、API 配置、素材库、日志和浏览器存储，随后重启应用。默认素材位于应用资源目录，始终保留。
+
 ## V1 PlanningGraph 计划模式
 
 V1 之后桌宠的"计划模式"由独立的 `PlanningGraph` LangGraph Agent 驱动，不再使用 `app/main.js` 中的 `callPlanningAI()` 直接 fetch + 强制 JSON 数组方案。相关目录和文件：
+
+### Electron 窗口与面板布局约束
+
+- `app/main.js` 维护唯一的基础窗口 bounds；提醒宽度、普通面板高度和计划面板高度均由它计算最终透明窗口区域。
+- 不允许提醒、聊天、计划或日历分别缓存旧 bounds 后直接 `setBounds()` 恢复，否则会产生窗口竞态和角色跳变。
+- `app/styles.css` 的 `--pet-anchor-x` 将桌宠、聊天气泡、控制栏和主面板锚定在未扩展画布中心；向左扩展提醒空间不会改变角色屏幕位置。
+- 提醒列和常驻计划条不可被 Flex 压缩；瞬时提醒最多同时显示三条，计划任务列表在自身容器内滚动。
+- API、聊天、状态、首次配置和日历面板互斥；从日历进入计划模式时必须先恢复对应日期的 Planning checkpoint，再显示草案。
+- 计划模式使用 `.chat-panel--planning` 稳定可用高度，输入框、确认操作和草案列表必须始终保留可见区域。
 
 - `src/agent/graphs/planning/`：PlanningGraph 实现。
   - `state.ts`：`PlanningState` Annotation、`AgentAction`、`AgentActionType`（七种动作：`ask_clarification`、`create_draft`、`patch_tasks`、`delete_task`、`add_task`、`request_confirmation`、`publish_plan`）、`PlanningResponseDTO`。
@@ -253,10 +268,10 @@ npm.cmd run pack
 5. 打开构建产物：
 
 ```text
-release/win-unpacked/PetFramework.exe
+release-ui-fix/win-unpacked/PetFramework.exe
 ```
 
-框架默认使用 placeholder pet，不需要真实 spritesheet 也能启动。
+框架默认使用 Blue 的真实 spritesheet；若角色包加载失败，则会降级为 placeholder pet，便于继续排查配置问题。
 
 ## 无动画资产时的行为
 
@@ -287,13 +302,13 @@ npm.cmd run pack
 构建后必须验证 `app.asar` 修改时间和大小，确认新角色配置已经打入构建产物：
 
 ```powershell
-Get-Item release\win-unpacked\resources\app.asar | Select-Object Name,Length,LastWriteTime
+Get-Item release-ui-fix\win-unpacked\resources\app.asar | Select-Object Name,Length,LastWriteTime
 ```
 
 构建后测试：
 
 ```text
-release/win-unpacked/PetFramework.exe
+release-ui-fix/win-unpacked/PetFramework.exe
 ```
 
 不要把旧 zip 当作最新版本发送。

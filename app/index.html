@@ -72,8 +72,8 @@
         <div class="chat-panel__head">
           <strong id="chatPanelTitle">聊天</strong>
           <div class="chat-panel__actions">
-            <button id="planModeToggle" type="button" class="chat-panel__plan-btn" aria-label="进入计划模式">📝 计划</button>
-            <button id="calendarToggle" type="button" class="chat-panel__plan-btn" aria-label="打开日历">📅 日历</button>
+            <button id="planModeToggle" type="button" class="chat-panel__plan-btn" aria-label="进入计划模式"><span class="icon">📝</span><span>计划</span></button>
+            <button id="calendarToggle" type="button" class="chat-panel__plan-btn" aria-label="打开日历"><span class="icon">📅</span><span>日历</span></button>
             <button id="chatClose" type="button" aria-label="关闭聊天">&#x00D7;</button>
           </div>
         </div>
@@ -155,12 +155,12 @@
         <section class="state-block">
           <div class="state-block__head">
             <h2>提醒与日程</h2>
-            <button id="refreshReminders" type="button">刷新</button>
+            <button id="refreshReminders" type="button"><span class="icon">🔄</span><span>刷新</span></button>
           </div>
           <div id="reminderList" class="memory-list"></div>
           <div class="state-block__head" style="margin-top:8px">
-            <button id="triggerDailyDigest" type="button">生成今日摘要</button>
-            <button id="triggerReminderCheck" type="button">检查到期提醒</button>
+            <button id="triggerDailyDigest" type="button"><span class="icon">📝</span><span>生成今日摘要</span></button>
+            <button id="triggerReminderCheck" type="button"><span class="icon">🔔</span><span>检查到期提醒</span></button>
           </div>
         </section>
         <section class="state-block">
@@ -174,42 +174,143 @@
         <section class="state-block">
           <div class="state-block__head">
             <h2>用户记忆 <small style="font-weight:normal;color:#888">SQLite</small></h2>
-            <button id="clearUserMemory" type="button">清空</button>
+            <button id="clearUserMemory" type="button"><span class="icon">🗑️</span><span>清空</span></button>
           </div>
           <div id="userMemoryList" class="memory-list"></div>
         </section>
         <section class="state-block">
           <div class="state-block__head">
             <h2>长期记忆 <small style="font-weight:normal;color:#888">SQLite</small></h2>
-            <button id="clearLongTermMemory" type="button">清空</button>
+            <button id="clearLongTermMemory" type="button"><span class="icon">🗑️</span><span>清空</span></button>
           </div>
           <div id="longTermMemoryList" class="memory-list"></div>
         </section>
         <section class="state-block">
           <div class="state-block__head">
             <h2>短期记忆 <small style="font-weight:normal;color:#888">SQLite</small></h2>
-            <button id="clearShortTermMemory" type="button">清空</button>
-            <button id="clearExpiredShortTerm" type="button">清理过期</button>
+            <button id="clearShortTermMemory" type="button"><span class="icon">🗑️</span><span>清空</span></button>
+            <button id="clearExpiredShortTerm" type="button"><span class="icon">🧹</span><span>清理过期</span></button>
           </div>
           <p id="shortTermMemoryNote" class="memory-note">
             短期记忆用于临时上下文，普通聊天不会自动保存到这里。数据存储于 SQLite。
           </p>
           <div id="shortTermMemoryList" class="memory-list"></div>
         </section>
+        <section class="state-block state-block--materials">
+          <div class="state-block__head">
+            <h2>动作素材</h2>
+            <button id="materialLibraryBtn" type="button"><span class="icon">✦</span><span>打开素材库</span></button>
+          </div>
+          <p class="memory-note">导入兼容的动作图集后会立即应用；默认 Blue 素材始终保留。</p>
+        </section>
         <div class="state-danger">
-          <button id="exportMemory" type="button">导出个人数据</button>
-          <button id="clearAllMemory" type="button">清空全部记忆</button>
+          <button id="exportMemory" type="button"><span class="icon">📤</span><span>导出个人数据</span></button>
+          <button id="clearAllMemory" type="button"><span class="icon">🗑️</span><span>清空全部记忆</span></button>
+          <button id="resetCharacterBtn" type="button"><span class="icon">🔄</span><span>重设人物性格</span></button>
+          <button id="resetUserDataBtn" type="button" class="state-danger__reset"><span class="icon">↺</span><span>清除所有数据并重新初始化</span></button>
+        </div>
+      </section>
+      <section id="materialPanel" class="state-panel material-panel hidden" aria-label="动作素材库">
+        <div class="state-panel__head">
+          <strong>动作素材库</strong>
+          <button id="materialBack" type="button" aria-label="返回状态">←</button>
+        </div>
+        <p class="material-panel__intro">导入的素材只覆盖当前桌宠外观，不会修改或删除默认 Blue 角色包。</p>
+        <label class="material-panel__mode" for="materialApplyMode">
+          <span>应用方式</span>
+          <select id="materialApplyMode">
+            <option value="immediate">导入后立即应用</option>
+          </select>
+        </label>
+        <button id="importMaterialBtn" class="material-import" type="button" aria-label="导入动作图集">
+          <span class="material-import__plus" aria-hidden="true">＋</span>
+          <span>导入动作图集</span>
+          <small>PNG / WebP · 1536 × 1872</small>
+        </button>
+        <div id="materialList" class="material-list" aria-live="polite"></div>
+        <div class="material-panel__actions">
+          <button id="restoreDefaultMaterialBtn" type="button">还原默认 Blue</button>
         </div>
       </section>
       <section id="onboardingPanel" class="state-panel onboarding-panel hidden" aria-label="首次配置">
         <div class="state-panel__head onboarding-panel__head">
           <div class="onboarding-panel__title">
             <span class="onboarding-panel__icon" aria-hidden="true">✨</span>
-            <strong>首次配置</strong>
+            <strong>角色初始化</strong>
+          </div>
+          <div id="onboardingStageBadge" class="onboarding-v8__badge hidden"></div>
+        </div>
+
+        <!-- V8 角色初始化向导容器：根据 phase 切换子视图 -->
+        <div id="onboardingV8" class="onboarding-v8">
+          <!-- collecting 阶段：V9 问题卡片 + 选项气泡 + 提交 -->
+          <div id="onboardingV8Collecting" class="onboarding-v8__phase onboarding-v8__phase--collecting hidden">
+            <!-- AI 简短引导语 -->
+            <div id="onboardingV8Guide" class="onboarding-v8__guide" aria-live="polite"></div>
+            <!-- V9 问题卡片容器，由 JS 动态渲染 -->
+            <div id="onboardingV8Cards" class="onboarding-v8__cards" aria-live="polite"></div>
+            <!-- 操作区 -->
+            <div class="onboarding-v8__actions">
+              <button type="button" id="onboardingV8SubmitCards" class="onboarding-v8__btn onboarding-v8__btn--primary" disabled>提交本组回答</button>
+            </div>
+            <!-- 旧版自然语言输入（保留作为兼容回退，默认隐藏） -->
+            <form id="onboardingV8Form" class="onboarding-v8__input-row onboarding-v8__input-row--legacy hidden">
+              <input
+                id="onboardingV8Answer"
+                type="text"
+                class="onboarding-v8__input"
+                placeholder="用自然语言描述你的角色偏好…"
+                autocomplete="off"
+                maxlength="2000"
+              />
+              <button type="submit" class="onboarding-v8__send" aria-label="发送">发送</button>
+            </form>
+          </div>
+
+          <!-- review 阶段：摘要展示 + 确认/返回修改 + 局部修改入口 -->
+          <div id="onboardingV8Review" class="onboarding-v8__phase onboarding-v8__phase--review hidden">
+            <div class="onboarding-v8__review-head">已整理出以下角色设定，请确认：</div>
+            <!-- V9: 摘要分区展示，每块带"修改"按钮 -->
+            <div id="onboardingV8SummaryBlocks" class="onboarding-v8__summary-blocks"></div>
+            <!-- 兼容字段：旧版纯文本摘要（隐藏，由 V9 区块替代） -->
+            <pre id="onboardingV8Summary" class="onboarding-v8__summary hidden"></pre>
+            <form id="onboardingV8ReviewForm" class="onboarding-v8__review-actions">
+              <input
+                id="onboardingV8Feedback"
+                type="text"
+                class="onboarding-v8__input"
+                placeholder="如需修改，简述要调整的地方；留空表示仅返回上一步"
+                autocomplete="off"
+                maxlength="2000"
+              />
+              <button type="button" id="onboardingV8ReviseBtn" class="onboarding-v8__btn onboarding-v8__btn--secondary">返回修改</button>
+              <button type="submit" class="onboarding-v8__btn onboarding-v8__btn--primary">确认设定</button>
+            </form>
+          </div>
+
+          <!-- busy 阶段：加载中 -->
+          <div id="onboardingV8Busy" class="onboarding-v8__phase onboarding-v8__phase--busy hidden">
+            <div class="onboarding-v8__spinner" aria-hidden="true"></div>
+            <div class="onboarding-v8__busy-text">正在思考…</div>
+          </div>
+
+          <!-- error 阶段：错误提示 + 重试 -->
+          <div id="onboardingV8Error" class="onboarding-v8__phase onboarding-v8__phase--error hidden">
+            <div id="onboardingV8ErrorText" class="onboarding-v8__error-text"></div>
+            <button type="button" id="onboardingV8RetryBtn" class="onboarding-v8__btn onboarding-v8__btn--primary">重试</button>
+          </div>
+
+          <!-- locked 阶段：完成 -->
+          <div id="onboardingV8Locked" class="onboarding-v8__phase onboarding-v8__phase--locked hidden">
+            <div class="onboarding-v8__locked-icon" aria-hidden="true">✓</div>
+            <div class="onboarding-v8__locked-text">角色配置已锁定，可以开始对话了。</div>
+            <button type="button" id="onboardingV8CloseBtn" class="onboarding-v8__btn onboarding-v8__btn--primary">开始对话</button>
           </div>
         </div>
-        <div id="onboardingMessage" class="state-status onboarding-panel__lead"></div>
-        <form id="onboardingForm" class="state-block onboarding-form">
+
+        <!-- 旧版表单（保留作为兼容回退，默认隐藏） -->
+        <div id="onboardingMessage" class="state-status onboarding-panel__lead hidden"></div>
+        <form id="onboardingForm" class="state-block onboarding-form hidden">
           <div class="onboarding-form__section">
             <label class="onboarding-form__field">
               <span>昵称</span>

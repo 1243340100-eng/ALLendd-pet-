@@ -590,8 +590,67 @@ const migrationV7: MigrationFile = {
   }
 };
 
+/**
+ * V8：角色初始化向导 - 扩展 characters 表保存编译后的角色 Profile。
+ *
+ * 新增列（幂等）：
+ * - base_character_id：基础角色包 ID（视觉/动画资源来源）
+ * - requirement_summary_json：CharacterRequirementSummary JSON
+ * - persona_json：CompiledCharacterProfile.persona JSON（ConversationGraph 使用）
+ * - personality_profile_json：CompiledCharacterProfile.personalityProfile JSON
+ * - config_version：编译配置版本号（用于回滚/审计）
+ * - is_locked：是否已锁定（用户确认后置 1）
+ * - completed_at：向导完成时间
+ * - locked_at：锁定时间
+ * - updated_at：最后更新时间
+ *
+ * 不修改 V1 已建表结构，只追加列。所有 JSON 读取后必须重新通过 Zod 校验。
+ */
+const migrationV8: MigrationFile = {
+  version: 8,
+  name: 'character_profile_locking',
+  sql: '',
+  run(db: DatabaseType): void {
+    addColumnIfNotExists(db, 'characters', 'base_character_id', "TEXT NOT NULL DEFAULT ''");
+    addColumnIfNotExists(db, 'characters', 'requirement_summary_json', 'TEXT');
+    addColumnIfNotExists(db, 'characters', 'persona_json', 'TEXT');
+    addColumnIfNotExists(db, 'characters', 'personality_profile_json', 'TEXT');
+    addColumnIfNotExists(db, 'characters', 'config_version', 'INTEGER NOT NULL DEFAULT 0');
+    addColumnIfNotExists(db, 'characters', 'is_locked', 'INTEGER NOT NULL DEFAULT 0');
+    addColumnIfNotExists(db, 'characters', 'completed_at', 'TEXT');
+    addColumnIfNotExists(db, 'characters', 'locked_at', 'TEXT');
+    addColumnIfNotExists(db, 'characters', 'updated_at', 'TEXT NOT NULL DEFAULT (datetime(\'now\'))');
+
+    // 索引：按 is_locked 加速启动检查
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_characters_locked
+      ON characters(is_locked, is_active);
+    `);
+
+    log.info('V8 character profile locking applied', {
+      fields: {
+        addedColumns: [
+          'base_character_id',
+          'requirement_summary_json',
+          'persona_json',
+          'personality_profile_json',
+          'config_version',
+          'is_locked',
+          'completed_at',
+          'locked_at',
+          'updated_at'
+        ],
+        indexes: ['idx_characters_locked']
+      }
+    });
+  }
+};
+
 /** 所有已注册的 migration，按 version 升序 */
-const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7];
+const ALL_MIGRATIONS: MigrationFile[] = [migrationV1, migrationV2, migrationV3, migrationV4, migrationV5, migrationV6, migrationV7, migrationV8];
+
+/** 当前最新 migration 版本（供 connection.ts 判断是否需要备份） */
+export const LATEST_MIGRATION_VERSION: number = ALL_MIGRATIONS[ALL_MIGRATIONS.length - 1].version;
 
 /** 执行所有待执行的 migration */
 export function runMigrations(db: DatabaseType): { applied: number; currentVersion: number } {

@@ -6,7 +6,7 @@
  * 此文件只定义类型契约，实际实现仍在 app/preload.js。
  * 后续 preload.js 可逐步迁移到此契约。
  */
-import type { ChatReplyDto, ErrorDto } from '../shared/dto/renderer';
+import type { ChatReplyDto, ErrorDto, OnboardingIpcResponse } from '../shared/dto/renderer';
 
 /** Renderer 侧可用的安全 API */
 export interface PetApiContract {
@@ -23,6 +23,15 @@ export interface PetApiContract {
   // API 配置
   getApiConfig: () => Promise<ApiConfigView>;
   saveApiConfig: (config: ApiConfigInput) => Promise<{ ok: boolean; error?: string }>;
+
+  // 用户动作素材库：只允许主进程通过文件选择器导入标准动作图集。
+  materials: {
+    list: () => Promise<MaterialLibraryView>;
+    importSpriteSheet: () => Promise<MaterialImportResult>;
+    apply: (materialId: string) => Promise<MaterialImportResult>;
+    restoreDefault: () => Promise<MaterialImportResult>;
+  };
+  resetUserData: () => Promise<{ ok: boolean; restarting?: boolean; error?: string }>;
 
   // 聊天
   sendChat: (payload: ChatSendInput) => Promise<ChatReplyDto | ErrorDto>;
@@ -62,6 +71,14 @@ export interface PetApiContract {
   setWindowScale: (scale: number) => Promise<void>;
   startDragAnimation: () => void;
   stopDragAnimation: () => void;
+
+  // V8 角色初始化向导
+  // 所有写操作携带 revision（乐观锁，与上次响应中的 revision 对齐）
+  onboardingGetState: () => Promise<OnboardingIpcResponse>;
+  onboardingStart: (revision: number) => Promise<OnboardingIpcResponse>;
+  onboardingSubmitAnswer: (answer: string, revision: number) => Promise<OnboardingIpcResponse>;
+  onboardingReviseSummary: (feedback: string, revision: number) => Promise<OnboardingIpcResponse>;
+  onboardingConfirmSummary: (revision: number) => Promise<OnboardingIpcResponse>;
 }
 
 /** Renderer 可见的 API 配置（不含密钥） */
@@ -79,6 +96,27 @@ export interface ApiConfigInput {
   endpoint: string;
   model: string;
   apiKey?: string;
+}
+
+export interface MaterialItemView {
+  id: string;
+  name: string;
+  createdAt: string;
+  width: number;
+  height: number;
+}
+
+export interface MaterialLibraryView {
+  activeId: string | null;
+  materials: MaterialItemView[];
+}
+
+export interface MaterialImportResult {
+  ok: boolean;
+  cancelled?: boolean;
+  activeId?: string | null;
+  material?: MaterialItemView;
+  error?: string;
 }
 
 /** 聊天输入 */

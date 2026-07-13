@@ -63,12 +63,12 @@ function testDefaultPackLoads(): void {
   const manager = new CharacterPackManager();
   const pack = manager.load(packPath);
 
-  check('Pack: manifest id is default-roxy', pack.manifest.id === 'default-roxy');
+  check('Pack: manifest id is blue', pack.manifest.id === 'blue');
   check('Pack: manifest schemaVersion is 1', pack.manifest.schemaVersion === 1);
-  check('Pack: manifest name is Roxy', pack.manifest.name === 'Roxy');
+  check('Pack: manifest name is Blue', pack.manifest.name === 'Blue');
 
   // Persona 加载
-  check('Pack: persona characterName is Roxy', pack.persona.characterName === 'Roxy');
+  check('Pack: persona characterName is Blue', pack.persona.characterName === 'Blue');
   check('Pack: persona corePrompt not empty', pack.persona.corePrompt.length > 0);
   check('Pack: persona speakingStyle has entries', pack.persona.speakingStyle.length > 0);
   check('Pack: persona relationshipBoundary has entries', pack.persona.relationshipBoundary.length > 0);
@@ -77,8 +77,8 @@ function testDefaultPackLoads(): void {
 
   // Prompt 加载
   check('Pack: prompt.md not empty', pack.prompt.length > 0);
-  check('Pack: prompt contains Roxy', pack.prompt.includes('Roxy'));
-  check('Pack: prompt contains 昌昌', pack.prompt.includes('昌昌'));
+  check('Pack: prompt contains Blue', pack.prompt.includes('Blue'));
+  check('Pack: prompt contains octopus identity', pack.prompt.includes('小章鱼'));
 
   // MotionMap 加载
   check('Pack: motionMap is object', typeof pack.motionMap === 'object' && pack.motionMap !== null);
@@ -98,7 +98,7 @@ function testNoHardcodedProfile(): void {
 
   // Persona 来自 persona.json，而非代码
   check('NoHardcode: persona characterId matches manifest id', pack.persona.characterId === pack.manifest.id);
-  check('NoHardcode: persona corePrompt from file', pack.persona.corePrompt.includes('异世界'));
+  check('NoHardcode: persona corePrompt from file', pack.persona.corePrompt.includes('小章鱼'));
   check('NoHardcode: persona userPetName is template placeholder', (pack.persona as any).userPetName === '{{user_display_name}}');
 
   // Prompt 来自 prompt.md
@@ -134,7 +134,7 @@ function testInvalidPackDoesNotOverwrite(): void {
   // 第一次加载有效包后加载无效包：应回退到有效包（或抛错，取决于是否有 previousPack）
   // 因为已有 activePack，load 失败时应回退
   if (!threw) {
-    check('InvalidPack: invalid pack did not overwrite valid pack', result.manifest.id === 'default-roxy');
+    check('InvalidPack: invalid pack did not overwrite valid pack', result.manifest.id === 'blue');
   } else {
     // 如果直接抛错也合理（没有有效包可回退的情况）
     check('InvalidPack: invalid pack threw CharacterPackInvalidError', true);
@@ -142,7 +142,7 @@ function testInvalidPackDoesNotOverwrite(): void {
 
   // 当前激活角色仍是有效的
   const active = manager.getActivePack();
-  check('InvalidPack: active pack still valid', active !== null && active.manifest.id === 'default-roxy');
+  check('InvalidPack: active pack still valid', active !== null && active.manifest.id === 'blue');
 
   // 清理
   try { fs.rmSync(invalidDir, { recursive: true }); } catch { /* ignore */ }
@@ -178,11 +178,11 @@ function testPathTraversalRejected(): void {
 
   // load() 在已有有效包时会回退而非抛错；验证恶意包未被加载
   const result = manager.load(maliciousDir);
-  check('PathTraversal: malicious pack rejected (fell back to valid)', result.manifest.id === 'default-roxy');
+  check('PathTraversal: malicious pack rejected (fell back to valid)', result.manifest.id === 'blue');
 
   // 当前激活角色仍是有效的
   const active = manager.getActivePack();
-  check('PathTraversal: active pack still valid', active !== null && active.manifest.id === 'default-roxy');
+  check('PathTraversal: active pack still valid', active !== null && active.manifest.id === 'blue');
 
   try { fs.rmSync(maliciousDir, { recursive: true }); } catch { /* ignore */ }
 }

@@ -19,8 +19,27 @@ contextBridge.exposeInMainWorld('petAPI', {
   onCharacterConfig: (callback) => ipcRenderer.on('character-config', (_event, config) => callback(config)),
   // 提交 onboarding 用户偏好，恢复 OnboardingGraph
   submitOnboardingPreferences: (preferences) => ipcRenderer.invoke('onboarding-submit', preferences),
+  // V8 角色初始化向导 IPC
+  onboardingGetState: () => ipcRenderer.invoke('onboarding:get-state'),
+  onboardingStart: (revision) => ipcRenderer.invoke('onboarding:start', { revision }),
+  onboardingSubmitAnswer: (answer, revision) => ipcRenderer.invoke('onboarding:submit-answer', { answer, revision }),
+  onboardingReviseSummary: (feedback, revision, targetStage) => ipcRenderer.invoke('onboarding:revise-summary', { feedback, revision, targetStage }),
+  onboardingConfirmSummary: (revision) => ipcRenderer.invoke('onboarding:confirm-summary', { revision }),
+  // V9 问题卡片 IPC
+  onboardingSubmitAnswers: (answers, revision) => ipcRenderer.invoke('onboarding:submit-answers', { answers, revision }),
+  onboardingSuggest: (questionId, revision) => ipcRenderer.invoke('onboarding:suggest', { questionId, revision }),
+  onboardingReset: () => ipcRenderer.invoke('onboarding:reset'),
+  onboardingSavePendingAnswers: (answers, revision) => ipcRenderer.invoke('onboarding:save-pending-answers', { answers, revision }),
+  onboardingClearPendingAnswers: (revision) => ipcRenderer.invoke('onboarding:clear-pending-answers', { revision }),
   getApiConfig: () => ipcRenderer.invoke('api-config-get'),
   saveApiConfig: (config) => ipcRenderer.invoke('api-config-save', config),
+  materials: {
+    list: () => ipcRenderer.invoke('material:list'),
+    importSpriteSheet: () => ipcRenderer.invoke('material:import'),
+    apply: (materialId) => ipcRenderer.invoke('material:apply', materialId),
+    restoreDefault: () => ipcRenderer.invoke('material:restore-default')
+  },
+  resetUserData: () => ipcRenderer.invoke('runtime:reset-user-data'),
   sendChat: (payload) => ipcRenderer.invoke('chat-send', payload),
   safeShell: {
     interpret: (text) => ipcRenderer.invoke('safe-shell:interpret', text),

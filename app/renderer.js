@@ -76,6 +76,14 @@ const clearLongTermMemory = document.getElementById('clearLongTermMemory');
 const clearShortTermMemory = document.getElementById('clearShortTermMemory');
 const clearAllMemory = document.getElementById('clearAllMemory');
 const exportMemory = document.getElementById('exportMemory');
+const resetCharacterBtn = document.getElementById('resetCharacterBtn');
+const resetUserDataBtn = document.getElementById('resetUserDataBtn');
+const materialLibraryBtn = document.getElementById('materialLibraryBtn');
+const materialPanel = document.getElementById('materialPanel');
+const materialBack = document.getElementById('materialBack');
+const importMaterialBtn = document.getElementById('importMaterialBtn');
+const materialList = document.getElementById('materialList');
+const restoreDefaultMaterialBtn = document.getElementById('restoreDefaultMaterialBtn');
 // 架构状态与提醒区域
 const archStatusView = document.getElementById('archStatusView');
 const reminderList = document.getElementById('reminderList');
@@ -94,6 +102,29 @@ const obWeatherCity = document.getElementById('obWeatherCity');
 const obDndEnabled = document.getElementById('obDndEnabled');
 const obNotificationEnabled = document.getElementById('obNotificationEnabled');
 const obSoundEnabled = document.getElementById('obSoundEnabled');
+// V8 角色初始化向导元素
+const onboardingV8 = document.getElementById('onboardingV8');
+const onboardingStageBadge = document.getElementById('onboardingStageBadge');
+const onboardingV8Collecting = document.getElementById('onboardingV8Collecting');
+const onboardingV8Review = document.getElementById('onboardingV8Review');
+const onboardingV8Busy = document.getElementById('onboardingV8Busy');
+const onboardingV8Error = document.getElementById('onboardingV8Error');
+const onboardingV8Locked = document.getElementById('onboardingV8Locked');
+const onboardingV8Chat = document.getElementById('onboardingV8Chat');
+const onboardingV8Form = document.getElementById('onboardingV8Form');
+const onboardingV8Answer = document.getElementById('onboardingV8Answer');
+const onboardingV8Summary = document.getElementById('onboardingV8Summary');
+const onboardingV8ReviewForm = document.getElementById('onboardingV8ReviewForm');
+const onboardingV8Feedback = document.getElementById('onboardingV8Feedback');
+const onboardingV8ReviseBtn = document.getElementById('onboardingV8ReviseBtn');
+const onboardingV8ErrorText = document.getElementById('onboardingV8ErrorText');
+const onboardingV8RetryBtn = document.getElementById('onboardingV8RetryBtn');
+const onboardingV8CloseBtn = document.getElementById('onboardingV8CloseBtn');
+// V9 问题卡片相关元素
+const onboardingV8Guide = document.getElementById('onboardingV8Guide');
+const onboardingV8Cards = document.getElementById('onboardingV8Cards');
+const onboardingV8SubmitCardsBtn = document.getElementById('onboardingV8SubmitCards');
+const onboardingV8SummaryBlocks = document.getElementById('onboardingV8SummaryBlocks');
 const obMemoryEnabled = document.getElementById('obMemoryEnabled');
 const petProfile = window.petProfile || {
   displayName: 'Pet Framework',
@@ -443,7 +474,13 @@ function getNightReminderMessage() {
 }
 
 function setText(element, textValue) {
-  if (element) element.textContent = textValue;
+  if (!element) return;
+  const textSpan = element.querySelector('span:not(.icon)');
+  if (textSpan) {
+    textSpan.textContent = textValue;
+  } else {
+    element.textContent = textValue;
+  }
 }
 
 function applyPetProfile() {
@@ -586,6 +623,7 @@ function clampScale(value) {
 function applyScale(nextScale = scale) {
   scale = clampScale(nextScale);
   document.documentElement.style.setProperty('--scale', String(scale));
+  document.documentElement.classList.toggle('scale-small', scale < 0.85);
   window.petAPI?.setWindowScale(scale);
   localStorage.setItem(lsKey('scale'), String(scale));
   drawFrame();
@@ -652,7 +690,7 @@ function showReminderBubble(message, duration = 20000) {
   reminderStack.appendChild(el);
   // 最多保留 5 个动态气泡，超过时移除最旧的一个
   const bubbles = reminderStack.querySelectorAll('.reminder-bubble:not(#reminderBubble)');
-  if (bubbles.length > 5) {
+  if (bubbles.length > 3) {
     removeReminderBubble(bubbles[0]);
   }
   // duration 后自动从 DOM 移除
@@ -757,8 +795,12 @@ function setVisibilityMode(visible) {
 }
 
 async function openApiPanel() {
+  closeMaterialPanel();
+  closeCalendarPanel();
+  closeOnboardingPanel();
   closeChatPanel();
   closeStatePanel();
+  window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
   const config = await window.petAPI?.getApiConfig?.();
   apiEndpoint.value = config?.endpoint || 'https://api.deepseek.com/v1/chat/completions';
   apiModel.value = config?.model || 'deepseek-chat';
@@ -781,7 +823,9 @@ async function openApiPanel() {
 }
 
 function closeApiPanel() {
+  const wasOpen = !apiPanel.classList.contains('hidden');
   apiPanel.classList.add('hidden');
+  if (wasOpen) window.petAPI?.releaseChatSpace?.();
 }
 
 function getResponseAnimationState(emotion) {
@@ -876,6 +920,17 @@ async function saveApiSettings(clearApiKey = false) {
 }
 
 function openChatPanel() {
+  // W4: 未完成角色初始化的用户不得进入聊天
+  // onboardingV8State.phase === 'locked' 表示已完成向导（缓存状态）
+  // 否则引导用户去完成向导，不打开聊天面板
+  if (onboardingV8State.phase !== 'locked') {
+    showBubble('请先完成角色初始化向导后再开始聊天', 5000);
+    openOnboardingPanel('请先完成角色初始化');
+    return;
+  }
+  closeMaterialPanel();
+  closeCalendarPanel();
+  closeOnboardingPanel();
   closeApiPanel();
   closeStatePanel();
   if (!planningMode) {
@@ -886,10 +941,13 @@ function openChatPanel() {
 }
 
 function closeChatPanel() {
-  if (!planningMode) {
+  const wasOpen = !chatPanel.classList.contains('hidden');
+  chatPanel.classList.add('hidden');
+  if (planningMode) {
+    exitPlanningMode(false);
+  } else if (wasOpen) {
     window.petAPI?.releaseChatSpace?.();
   }
-  chatPanel.classList.add('hidden');
 }
 
 function setStateStatus(message) {
@@ -1176,6 +1234,53 @@ async function exportMemoryData() {
   }
 }
 
+/**
+ * 重设人物性格：解锁当前角色、清除 onboarding 状态、重新启动向导。
+ * 需要二次确认，因为会清除当前角色配置。
+ */
+async function resetCharacter() {
+  const firstOk = await showConfirmDialog('确定要重设人物性格吗？这将清除当前角色的所有配置，你需要重新完成初始化向导。');
+  if (!firstOk) return;
+  const secondOk = await showConfirmDialog('再次确认：重设后无法恢复当前角色配置，是否继续？');
+  if (!secondOk) return;
+  try {
+    const resp = await window.petAPI?.onboardingReset?.();
+    if (!resp) {
+      showBubble('重设失败：未收到响应', 5000);
+      return;
+    }
+    if (resp.phase === 'error') {
+      showBubble(`重设失败：${resp.errorReason || '未知错误'}`, 5000);
+      return;
+    }
+    // 重设成功，切换到 onboarding 面板
+    showBubble('已重设人物性格，请重新完成初始化', 4000);
+    // 关闭状态面板，打开 onboarding 面板
+    closeStatePanel();
+    closeCalendarPanel();
+    closeApiPanel();
+    closeChatPanel();
+    window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
+    if (onboardingPanel) onboardingPanel.classList.remove('hidden');
+    // 重置 V8 状态，确保重新渲染
+    onboardingV8State._v8Initialized = true;
+    onboardingV8State.currentQuestions = [];
+    onboardingV8State.cardAnswers = {};
+    onboardingV8State.cardsRendered = false;
+    onboardingV8State.lastPendingQuestion = '';
+    onboardingV8State.lastOperation = null;
+    onboardingV8State.lastAnswer = '';
+    onboardingV8State.lastRevision = 0;
+    onboardingV8State.pendingBusy = false;
+    // P2: 重置时清除本地 debounce timer（reset IPC 会消费 checkpoint，服务端 pendingAnswers 已失效）
+    clearPendingAnswersTimer();
+    // 直接用响应数据渲染
+    handleOnboardingV8Response(resp);
+  } catch (e) {
+    showBubble(`重设失败：${e?.message || e}`, 5000);
+  }
+}
+
 async function loadStatePanel() {
   const loadToken = ++statePanelLoadToken;
   setStateStatus(t('loading'));
@@ -1295,31 +1400,218 @@ async function triggerReminderCheck() {
 }
 
 async function openStatePanel() {
+  closeMaterialPanel();
+  closeCalendarPanel();
+  closeOnboardingPanel();
   closeApiPanel();
   closeChatPanel();
+  window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
   statePanel.classList.remove('hidden');
   await loadStatePanel();
 }
 
 function closeStatePanel() {
+  const wasOpen = !statePanel.classList.contains('hidden');
   statePanelLoadToken += 1;
   if (statePanel.contains(document.activeElement)) {
     document.activeElement.blur();
   }
   statePanel.classList.add('hidden');
+  if (wasOpen) window.petAPI?.releaseChatSpace?.();
+}
+
+function renderMaterialLibrary(library) {
+  if (!materialList) return;
+  const materials = Array.isArray(library?.materials) ? library.materials : [];
+  const activeId = library?.activeId || null;
+  materialList.innerHTML = '';
+
+  if (materials.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'material-list__empty';
+    empty.textContent = '还没有导入素材。点击上方加号选择动作图集。';
+    materialList.appendChild(empty);
+  }
+
+  for (const material of materials) {
+    const item = document.createElement('div');
+    item.className = 'material-item';
+    const info = document.createElement('div');
+    info.className = 'material-item__info';
+    const title = document.createElement('strong');
+    title.textContent = material.name || '未命名动作图集';
+    const meta = document.createElement('small');
+    meta.textContent = `${material.width || 1536} × ${material.height || 1872}${material.id === activeId ? ' · 当前应用' : ''}`;
+    info.appendChild(title);
+    info.appendChild(meta);
+
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.textContent = material.id === activeId ? '已应用' : '应用';
+    apply.disabled = material.id === activeId;
+    apply.addEventListener('click', async () => {
+      apply.disabled = true;
+      const result = await window.petAPI?.materials?.apply?.(material.id);
+      if (!result?.ok) {
+        showBubble(result?.error || '应用素材失败。', 5000);
+      } else {
+        showBubble(`已应用「${material.name || '动作图集'}」。`, 3000);
+      }
+      await loadMaterialLibrary();
+    });
+    item.appendChild(info);
+    item.appendChild(apply);
+    materialList.appendChild(item);
+  }
+
+  if (restoreDefaultMaterialBtn) restoreDefaultMaterialBtn.disabled = !activeId;
+}
+
+async function loadMaterialLibrary() {
+  try {
+    const library = await window.petAPI?.materials?.list?.();
+    renderMaterialLibrary(library);
+  } catch {
+    if (materialList) {
+      materialList.innerHTML = '<div class="material-list__empty">无法读取素材库。</div>';
+    }
+  }
+}
+
+async function openMaterialPanel() {
+  closeCalendarPanel();
+  closeOnboardingPanel();
+  closeApiPanel();
+  closeChatPanel();
+  closeStatePanel();
+  window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
+  materialPanel?.classList.remove('hidden');
+  await loadMaterialLibrary();
+}
+
+function closeMaterialPanel() {
+  const wasOpen = materialPanel && !materialPanel.classList.contains('hidden');
+  if (materialPanel?.contains(document.activeElement)) document.activeElement.blur();
+  materialPanel?.classList.add('hidden');
+  if (wasOpen) window.petAPI?.releaseChatSpace?.();
+}
+
+async function returnToStateFromMaterialPanel() {
+  closeMaterialPanel();
+  await openStatePanel();
+}
+
+async function importMaterial() {
+  if (!importMaterialBtn) return;
+  importMaterialBtn.disabled = true;
+  try {
+    const result = await window.petAPI?.materials?.importSpriteSheet?.();
+    if (!result?.ok && !result?.cancelled) {
+      showBubble(result?.error || '导入素材失败。', 6000);
+    } else if (result?.ok) {
+      showBubble(`已导入并应用「${result.material?.name || '动作图集'}」。`, 3500);
+    }
+    await loadMaterialLibrary();
+  } catch {
+    showBubble('导入素材失败。', 5000);
+  } finally {
+    importMaterialBtn.disabled = false;
+  }
+}
+
+async function restoreDefaultMaterial() {
+  const ok = await showConfirmDialog('还原默认 Blue 外观吗？已导入的素材会保留在素材库中。');
+  if (!ok) return;
+  const result = await window.petAPI?.materials?.restoreDefault?.();
+  if (!result?.ok) {
+    showBubble(result?.error || '还原默认素材失败。', 5000);
+    return;
+  }
+  showBubble('已还原默认 Blue 外观。', 3000);
+  await loadMaterialLibrary();
+}
+
+async function resetUserData() {
+  const firstOk = await showConfirmDialog(
+    '清除所有用户数据并恢复到 LangGraph 的首次初始化吗？这会删除聊天、记忆、计划、提醒、角色初始化记录、API 配置和你导入的素材；默认 Blue 素材不会删除。'
+  );
+  if (!firstOk) return;
+  const secondOk = await showConfirmDialog('再次确认：应用将立即重启，并从首次初始化开始。是否继续？');
+  if (!secondOk) return;
+  resetUserDataBtn.disabled = true;
+  try {
+    const result = await window.petAPI?.resetUserData?.();
+    if (!result?.ok) {
+      resetUserDataBtn.disabled = false;
+      showBubble(result?.error || '恢复初始状态失败。', 6000);
+      return;
+    }
+    showBubble('正在清除用户数据并重新启动…', 3000);
+  } catch {
+    resetUserDataBtn.disabled = false;
+    showBubble('恢复初始状态失败。', 6000);
+  }
 }
 
 // ===== Onboarding 首次配置面板 =====
-function openOnboardingPanel(message) {
+// V10：改为 async，先异步确认状态再决定是否显示面板。
+// 目的：避免已锁定角色在冷启动时先闪现“角色配置已锁定”界面再隐藏。
+async function openOnboardingPanel(message) {
+  closeMaterialPanel();
+  closeCalendarPanel();
   closeApiPanel();
   closeChatPanel();
   closeStatePanel();
   if (message && onboardingMessage) {
     onboardingMessage.textContent = message;
   }
-  if (onboardingPanel) {
-    onboardingPanel.classList.remove('hidden');
+  // V8 激活时隐藏旧版表单，避免与向导界面重叠
+  if (onboardingForm) onboardingForm.classList.add('hidden');
+  if (onboardingMessage) onboardingMessage.classList.add('hidden');
+
+  // V8：首次打开面板时，先查询后端状态，确认不是已锁定角色再展示面板
+  if (onboardingV8 && !onboardingV8State._v8Initialized) {
+    onboardingV8State._v8Initialized = true;
+    setOnboardingV8Phase('busy');
+    try {
+      const resp = await window.petAPI?.onboardingGetState?.();
+      // 如果已锁定（已完成），直接同步状态并放弃展示面板
+      if (resp && (resp.isCompleted || resp.phase === 'locked')) {
+        onboardingV8State.phase = 'locked';
+        setOnboardingV8Phase('locked');
+        setOnboardingV8StageBadge(null, 1);
+        window.petAPI?.releaseChatSpace?.();
+        return;
+      }
+      // 有进行中的 checkpoint（提问或 review），才展示面板并恢复
+      if (resp && (resp.pendingQuestion || resp.summaryDisplayText || resp.phase === 'review')) {
+        window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
+        if (onboardingPanel) onboardingPanel.classList.remove('hidden');
+        handleOnboardingV8Response(resp);
+        return;
+      }
+      // 否则启动新向导，展示面板
+      window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
+      if (onboardingPanel) onboardingPanel.classList.remove('hidden');
+      startOnboardingV8();
+      return;
+    } catch {
+      // get-state 失败，回退到展示面板并尝试启动
+      window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
+      if (onboardingPanel) onboardingPanel.classList.remove('hidden');
+      startOnboardingV8();
+      return;
+    }
   }
+
+  // V8 已初始化或非 V8 流程：直接显示面板
+  // 兜底防御：若已锁定则不再展示面板，避免状态异常时重复弹出
+  if (onboardingV8 && onboardingV8State.phase === 'locked') {
+    window.petAPI?.releaseChatSpace?.();
+    return;
+  }
+  window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
+  if (onboardingPanel) onboardingPanel.classList.remove('hidden');
 }
 
 function closeOnboardingPanel() {
@@ -1328,6 +1620,7 @@ function closeOnboardingPanel() {
       document.activeElement.blur();
     }
     onboardingPanel.classList.add('hidden');
+    window.petAPI?.releaseChatSpace?.();
   }
 }
 
@@ -1394,15 +1687,950 @@ async function submitOnboarding(event) {
   }
 }
 
+// ===== V8 角色初始化向导 =====
+
+/** V8 向导客户端状态：当前 phase、最近响应、最近一次显示的问题 */
+const onboardingV8State = {
+  phase: 'busy',
+  revision: 0,
+  traceId: '',
+  lastPendingQuestion: '',
+  pendingBusy: false,
+  // I6: 保存上次操作用于重试
+  lastOperation: null,  // 'answer' | 'feedback' | 'confirm' | 'card-answers' | null
+  lastAnswer: '',       // 上次提交的 answer 或 feedback
+  lastRevision: 0,      // 上次操作时的 revision
+  // V9: 当前轮问题卡片（来自最近响应）
+  currentQuestions: [],
+  // V9: 当前轮用户的卡片回答（本地状态，提交前汇总）
+  cardAnswers: {},
+  // V9: 标记是否已渲染过当前轮卡片（避免重复渲染）
+  cardsRendered: false
+};
+
+// ===== P2: pendingAnswers 临时保存（debounce 600ms） =====
+const PENDING_ANSWERS_DEBOUNCE_MS = 600;
+let pendingAnswersTimer = null;
+// 标记是否正在恢复 pendingAnswers，恢复过程中触发的 input 事件不应再调度保存
+let isRestoringPendingAnswers = false;
+
+/** 阶段中文标签 */
+const ONBOARDING_STAGE_LABELS = {
+  basic: '基础设定',
+  speaking: '说话风格',
+  relationship: '关系边界',
+  taboos: '禁区与忌讳',
+  review: '最终确认'
+};
+
+/** 简易 HTML 转义 */
+function escapeOnboardingV8Html(text) {
+  if (text == null) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** 切换 V8 阶段视图 */
+function setOnboardingV8Phase(phase) {
+  onboardingV8State.phase = phase;
+  // V8 阶段切换时确保旧版表单/提示不显示，防止布局重叠
+  if (onboardingForm) onboardingForm.classList.add('hidden');
+  if (onboardingMessage) onboardingMessage.classList.add('hidden');
+  const phases = [onboardingV8Collecting, onboardingV8Review, onboardingV8Busy, onboardingV8Error, onboardingV8Locked];
+  for (const el of phases) {
+    if (el) el.classList.add('hidden');
+  }
+  const target = {
+    collecting: onboardingV8Collecting,
+    review: onboardingV8Review,
+    busy: onboardingV8Busy,
+    error: onboardingV8Error,
+    locked: onboardingV8Locked
+  }[phase];
+  if (target) target.classList.remove('hidden');
+}
+
+/** 显示阶段徽章 */
+function setOnboardingV8StageBadge(stage, progress) {
+  if (!onboardingStageBadge) return;
+  if (!stage) {
+    onboardingStageBadge.classList.add('hidden');
+    onboardingStageBadge.textContent = '';
+    return;
+  }
+  const label = ONBOARDING_STAGE_LABELS[stage] || stage;
+  const pct = Math.round((progress || 0) * 100);
+  onboardingStageBadge.textContent = `${label} · ${pct}%`;
+  onboardingStageBadge.classList.remove('hidden');
+}
+
+/** 追加一条聊天消息到 V8 collecting 区 */
+function appendOnboardingV8ChatMessage(role, text) {
+  if (!onboardingV8Chat) return;
+  const msg = document.createElement('div');
+  msg.className = `onboarding-v8__chat-msg onboarding-v8__chat-msg--${role}`;
+  msg.textContent = text || '';
+  onboardingV8Chat.appendChild(msg);
+  // 滚动到底部
+  onboardingV8Chat.scrollTop = onboardingV8Chat.scrollHeight;
+}
+
+// ===== P2: pendingAnswers 收集/保存/恢复/清除 =====
+
+/**
+ * 从当前 UI DOM 收集所有卡片的未提交选择，返回 PendingAnswerEntry[]。
+ * 安全约束：只收集 questionId、selectedOptionIds、customText、usedSuggestedAnswer，
+ * 不收集 selectedValues（后端从 checkpoint 的 question.options 重新映射值）。
+ */
+function collectPendingAnswers() {
+  const questions = onboardingV8State.currentQuestions || [];
+  const answers = [];
+  for (const q of questions) {
+    if (!q || !q.id) continue;
+    const card = onboardingV8Cards?.querySelector(`.onboarding-v8__card[data-question-id="${CSS.escape(q.id)}"]`);
+    if (!card) continue;
+
+    // 收集选中选项 ID
+    const selectedButtons = card.querySelectorAll('.onboarding-v8__option.is-selected');
+    const selectedOptionIds = Array.from(selectedButtons).map((b) => b.dataset.optionId).filter(Boolean);
+
+    // 收集文本输入
+    let customText = '';
+    const textInput = card.querySelector('.onboarding-v8__card-input:not(.onboarding-v8__card-input--other)');
+    const otherInput = card.querySelector('.onboarding-v8__card-input--other');
+    if (textInput && textInput.value.trim()) {
+      customText = textInput.value.trim();
+    }
+    if (otherInput && otherInput.value.trim()) {
+      customText = otherInput.value.trim();
+    }
+
+    const usedSuggestedAnswer = !!(textInput && textInput.dataset.isSuggestion === '1');
+
+    // 仅当有内容时才收集
+    if (selectedOptionIds.length > 0 || customText) {
+      const entry = { questionId: q.id };
+      if (selectedOptionIds.length > 0) entry.selectedOptionIds = selectedOptionIds;
+      if (customText) entry.customText = customText;
+      if (usedSuggestedAnswer) entry.usedSuggestedAnswer = true;
+      answers.push(entry);
+    }
+  }
+  return answers;
+}
+
+/**
+ * 调度 pendingAnswers 保存（600ms debounce）。
+ * 输入变化时调用，避免频繁 IPC。恢复期间不调度。
+ */
+function schedulePendingAnswersSave() {
+  if (isRestoringPendingAnswers) return;
+  if (pendingAnswersTimer) clearTimeout(pendingAnswersTimer);
+  pendingAnswersTimer = setTimeout(() => {
+    pendingAnswersTimer = null;
+    const answers = collectPendingAnswers();
+    // 即使 answers 为空也保存（用户清空所有选择时需要持久化清空状态）
+    try {
+      window.petAPI?.onboardingSavePendingAnswers?.(answers, onboardingV8State.revision);
+    } catch (e) {
+      // 保存失败不影响 UI，下次输入变化会再次尝试
+      console.warn('[pendingAnswers] save failed:', e?.message || e);
+    }
+  }, PENDING_ANSWERS_DEBOUNCE_MS);
+}
+
+/**
+ * 清除本地 debounce timer（不调用 IPC）。
+ * 用于阶段切换、错误等不需要显式清除服务端的场景（Graph 保存新 checkpoint 时会自然清除）。
+ */
+function clearPendingAnswersTimer() {
+  if (pendingAnswersTimer) {
+    clearTimeout(pendingAnswersTimer);
+    pendingAnswersTimer = null;
+  }
+}
+
+/**
+ * 清除 pendingAnswers：清除本地 timer + 调用 IPC 清除服务端。
+ * 用于提交成功、reset 等需要显式清除的场景。
+ */
+function clearPendingAnswers() {
+  clearPendingAnswersTimer();
+  try {
+    window.petAPI?.onboardingClearPendingAnswers?.(onboardingV8State.revision);
+  } catch (e) {
+    console.warn('[pendingAnswers] clear failed:', e?.message || e);
+  }
+}
+
+/**
+ * 从 IPC 响应恢复 UI 选择状态。
+ * 仅在 collecting 阶段、卡片已渲染后调用。
+ * 恢复过程中设置 isRestoringPendingAnswers 标志，防止 input 事件触发保存。
+ */
+function restorePendingAnswers(pendingAnswers) {
+  if (!pendingAnswers || !Array.isArray(pendingAnswers.answers) || pendingAnswers.answers.length === 0) {
+    return;
+  }
+  if (!onboardingV8Cards) return;
+
+  isRestoringPendingAnswers = true;
+  try {
+    for (const entry of pendingAnswers.answers) {
+      if (!entry || !entry.questionId) continue;
+      const card = onboardingV8Cards.querySelector(`.onboarding-v8__card[data-question-id="${CSS.escape(entry.questionId)}"]`);
+      if (!card) continue;
+
+      // 恢复选项选中状态
+      if (Array.isArray(entry.selectedOptionIds) && entry.selectedOptionIds.length > 0) {
+        const optionButtons = card.querySelectorAll('.onboarding-v8__option');
+        optionButtons.forEach((btn) => {
+          if (entry.selectedOptionIds.includes(btn.dataset.optionId)) {
+            btn.classList.add('is-selected');
+          } else {
+            btn.classList.remove('is-selected');
+          }
+        });
+      }
+
+      // 恢复文本输入
+      if (typeof entry.customText === 'string' && entry.customText) {
+        const textInput = card.querySelector('.onboarding-v8__card-input:not(.onboarding-v8__card-input--other)');
+        const otherInput = card.querySelector('.onboarding-v8__card-input--other');
+        if (textInput) {
+          textInput.value = entry.customText;
+          if (entry.usedSuggestedAnswer) {
+            textInput.dataset.isSuggestion = '1';
+            textInput.classList.add('onboarding-v8__card-input--suggestion');
+          }
+        } else if (otherInput) {
+          otherInput.value = entry.customText;
+        }
+      }
+
+      // 重新收集到 cardAnswers（与 collectOnboardingV8CardAnswer 逻辑一致）
+      const question = (onboardingV8State.currentQuestions || []).find((q) => q.id === entry.questionId);
+      if (question) {
+        const optionsWrap = card.querySelector('.onboarding-v8__options');
+        const otherInput = card.querySelector('.onboarding-v8__card-input--other');
+        if (optionsWrap || otherInput) {
+          collectOnboardingV8CardAnswer(question, optionsWrap, otherInput);
+        }
+      }
+    }
+    // 恢复完成后更新提交按钮状态
+    updateOnboardingV8SubmitButton();
+  } finally {
+    isRestoringPendingAnswers = false;
+  }
+}
+
+/** 处理 V8 IPC 响应，更新 UI 状态 */
+function handleOnboardingV8Response(resp) {
+  if (!resp) {
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) onboardingV8ErrorText.textContent = '未收到响应。';
+    return;
+  }
+  onboardingV8State.revision = resp.revision || 0;
+  onboardingV8State.traceId = resp.traceId || '';
+  onboardingV8State.pendingBusy = false;
+
+  // 已完成
+  if (resp.isCompleted || resp.phase === 'locked') {
+    clearPendingAnswersTimer(); // 进入 locked 阶段：清除本地 timer（Graph 已保存新 checkpoint 自然清除 pendingAnswers）
+    setOnboardingV8Phase('locked');
+    setOnboardingV8StageBadge(null, 1);
+    return;
+  }
+
+  // 错误
+  if (resp.phase === 'error') {
+    clearPendingAnswersTimer(); // 错误状态：清除本地 timer，避免错误恢复时误保存
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      const reason = resp.errorReason || '未知错误';
+      onboardingV8ErrorText.textContent = `初始化遇到问题：${reason}`;
+    }
+    setOnboardingV8StageBadge(resp.currentStage, resp.completionProgress);
+    return;
+  }
+
+  // Review 阶段
+  if (resp.phase === 'review') {
+    clearPendingAnswersTimer(); // 进入 review：清除本地 timer（Graph 已保存新 checkpoint 自然清除 pendingAnswers）
+    setOnboardingV8Phase('review');
+    setOnboardingV8StageBadge(resp.currentStage, resp.completionProgress);
+    // V9: 渲染摘要区块（每块带"修改"按钮）
+    renderOnboardingV8SummaryBlocks(resp.summaryDisplayText, resp.currentStage);
+    if (onboardingV8Feedback) onboardingV8Feedback.value = '';
+    return;
+  }
+
+  // Collecting 阶段（默认）
+  // 进入新一轮 collecting：清除旧 timer（新一轮问题集不同，旧 pendingAnswers 已失效）
+  clearPendingAnswersTimer();
+  setOnboardingV8Phase('collecting');
+  setOnboardingV8StageBadge(resp.currentStage, resp.completionProgress);
+
+  // V9: 优先使用结构化问题卡片
+  const questions = Array.isArray(resp.currentQuestions) ? resp.currentQuestions : [];
+  if (questions.length > 0) {
+    onboardingV8State.currentQuestions = questions;
+    onboardingV8State.cardAnswers = {};
+    onboardingV8State.cardsRendered = false;
+    renderOnboardingV8Cards(questions);
+    // P2: 渲染卡片后恢复 pendingAnswers（从 checkpoint 恢复的未提交选择）
+    if (resp.pendingAnswers) {
+      restorePendingAnswers(resp.pendingAnswers);
+    }
+    // 显示引导语（pendingQuestion 作为引导）
+    if (onboardingV8Guide && resp.pendingQuestion) {
+      onboardingV8Guide.textContent = resp.pendingQuestion;
+      onboardingV8Guide.classList.remove('hidden');
+    } else if (onboardingV8Guide) {
+      onboardingV8Guide.classList.add('hidden');
+    }
+  } else if (resp.pendingQuestion && resp.pendingQuestion !== onboardingV8State.lastPendingQuestion) {
+    // 兼容旧文本路径：无卡片时显示 pendingQuestion 作为引导
+    if (onboardingV8Guide) {
+      onboardingV8Guide.textContent = resp.pendingQuestion;
+      onboardingV8Guide.classList.remove('hidden');
+    }
+    onboardingV8State.lastPendingQuestion = resp.pendingQuestion;
+    // 显示旧版输入框作为回退
+    if (onboardingV8Form) onboardingV8Form.classList.remove('hidden');
+    if (onboardingV8Cards) onboardingV8Cards.innerHTML = '';
+    if (onboardingV8SubmitCardsBtn) onboardingV8SubmitCardsBtn.classList.add('hidden');
+  }
+
+  if (onboardingV8Answer) {
+    onboardingV8Answer.value = '';
+    onboardingV8Answer.focus();
+  }
+}
+
+/** 启动 V8 向导 */
+async function startOnboardingV8() {
+  setOnboardingV8Phase('busy');
+  if (onboardingV8Chat) onboardingV8Chat.innerHTML = '';
+  onboardingV8State.lastPendingQuestion = '';
+  onboardingV8State.revision = 0;
+  try {
+    const resp = await window.petAPI?.onboardingStart?.(0);
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `启动失败：${error?.message || error}`;
+    }
+  }
+}
+
+/** 提交自然语言回答 */
+async function submitOnboardingV8Answer(answer) {
+  if (!answer || onboardingV8State.pendingBusy) return;
+  // 立即显示用户输入
+  appendOnboardingV8ChatMessage('user', answer);
+  // I6: 保存操作信息用于重试
+  onboardingV8State.lastOperation = 'answer';
+  onboardingV8State.lastAnswer = answer;
+  onboardingV8State.lastRevision = onboardingV8State.revision;
+  onboardingV8State.pendingBusy = true;
+  setOnboardingV8Phase('busy');
+  try {
+    const resp = await window.petAPI?.onboardingSubmitAnswer?.(answer, onboardingV8State.revision);
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    onboardingV8State.pendingBusy = false;
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `提交失败：${error?.message || error}`;
+    }
+  }
+}
+
+/** Review 阶段：返回修改 */
+async function reviseOnboardingV8Summary() {
+  const feedback = (onboardingV8Feedback?.value || '').trim();
+  if (onboardingV8State.pendingBusy) return;
+  if (feedback) {
+    appendOnboardingV8ChatMessage('user', feedback);
+  }
+  // I6: 保存操作信息用于重试
+  onboardingV8State.lastOperation = 'feedback';
+  onboardingV8State.lastAnswer = feedback || '我想修改一些设定';
+  onboardingV8State.lastRevision = onboardingV8State.revision;
+  onboardingV8State.pendingBusy = true;
+  setOnboardingV8Phase('busy');
+  try {
+    const resp = await window.petAPI?.onboardingReviseSummary?.(
+      feedback || '我想修改一些设定',
+      onboardingV8State.revision
+    );
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    onboardingV8State.pendingBusy = false;
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `返回修改失败：${error?.message || error}`;
+    }
+  }
+}
+
+/** Review 阶段：确认摘要 */
+async function confirmOnboardingV8Summary() {
+  if (onboardingV8State.pendingBusy) return;
+  // P2: 进入角色锁定前清除本地 timer（Graph persist_and_lock 会消费 checkpoint）
+  clearPendingAnswersTimer();
+  // I6: 保存操作信息用于重试
+  onboardingV8State.lastOperation = 'confirm';
+  onboardingV8State.lastAnswer = '';
+  onboardingV8State.lastRevision = onboardingV8State.revision;
+  onboardingV8State.pendingBusy = true;
+  setOnboardingV8Phase('busy');
+  if (onboardingV8Busy) {
+    const busyText = onboardingV8Busy.querySelector('.onboarding-v8__busy-text');
+    if (busyText) busyText.textContent = '正在锁定角色配置…';
+  }
+  try {
+    const resp = await window.petAPI?.onboardingConfirmSummary?.(onboardingV8State.revision);
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    onboardingV8State.pendingBusy = false;
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `确认失败：${error?.message || error}`;
+    }
+  }
+}
+
+/**
+ * I6: 重试上次失败的操作。
+ * 根据 lastOperation 重新提交原 answer/feedback/confirm，而不是仅获取状态。
+ * model_unavailable 错误时引导用户打开 API 设置。
+ */
+async function retryOnboardingV8() {
+  const op = onboardingV8State.lastOperation;
+  if (!op) {
+    // 没有上次操作记录，回退到获取状态
+    setOnboardingV8Phase('busy');
+    try {
+      const resp = await window.petAPI?.onboardingGetState?.();
+      handleOnboardingV8Response(resp);
+    } catch (error) {
+      setOnboardingV8Phase('error');
+      if (onboardingV8ErrorText) {
+        onboardingV8ErrorText.textContent = `重试失败：${error?.message || error}`;
+      }
+    }
+    return;
+  }
+
+  // 检查是否是 model_unavailable 错误，引导用户打开 API 设置
+  const errorText = onboardingV8ErrorText?.textContent || '';
+  if (errorText.includes('model_unavailable') || errorText.includes('API') || errorText.includes('api_key')) {
+    showBubble('API 配置异常，请先设置 API Key', 5000);
+    openApiPanel();
+    return;
+  }
+
+  setOnboardingV8Phase('busy');
+  onboardingV8State.pendingBusy = true;
+  try {
+    let resp;
+    if (op === 'answer') {
+      resp = await window.petAPI?.onboardingSubmitAnswer?.(
+        onboardingV8State.lastAnswer,
+        onboardingV8State.lastRevision
+      );
+    } else if (op === 'feedback') {
+      resp = await window.petAPI?.onboardingReviseSummary?.(
+        onboardingV8State.lastAnswer,
+        onboardingV8State.lastRevision
+      );
+    } else if (op === 'confirm') {
+      resp = await window.petAPI?.onboardingConfirmSummary?.(
+        onboardingV8State.lastRevision
+      );
+    } else if (op === 'card-answers') {
+      // V9: 结构化卡片回答重试。重新收集当前 cardAnswers 并提交。
+      // 如果 cardAnswers 已清空，回退到 get-state 恢复 UI。
+      const answers = collectOnboardingV8CardAnswers();
+      if (answers.length === 0) {
+        const stateResp = await window.petAPI?.onboardingGetState?.();
+        handleOnboardingV8Response(stateResp);
+        return;
+      }
+      resp = await window.petAPI?.onboardingSubmitAnswers?.(
+        answers,
+        onboardingV8State.lastRevision
+      );
+    }
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    onboardingV8State.pendingBusy = false;
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `重试失败：${error?.message || error}`;
+    }
+  }
+}
+
+// ===== V9 问题卡片渲染与交互 =====
+
+/**
+ * 渲染 V9 问题卡片。
+ * 每个问题对应一张独立卡片，支持 text/single_choice/multiple_choice/hybrid。
+ * @param {Array} questions - OnboardingQuestionDto[]
+ */
+function renderOnboardingV8Cards(questions) {
+  if (!onboardingV8Cards) return;
+  onboardingV8Cards.innerHTML = '';
+  onboardingV8State.cardAnswers = {};
+  onboardingV8State.cardsRendered = true;
+
+  // 隐藏旧版输入框，显示提交按钮
+  if (onboardingV8Form) onboardingV8Form.classList.add('hidden');
+  if (onboardingV8SubmitCardsBtn) {
+    onboardingV8SubmitCardsBtn.classList.remove('hidden');
+    onboardingV8SubmitCardsBtn.disabled = true;
+  }
+
+  questions.forEach((q, idx) => {
+    const card = createOnboardingV8CardElement(q, idx);
+    if (card) onboardingV8Cards.appendChild(card);
+  });
+}
+
+/**
+ * 创建单张问题卡片元素。
+ */
+function createOnboardingV8CardElement(question, index) {
+  if (!question || !question.id) return null;
+  const card = document.createElement('div');
+  card.className = 'onboarding-v8__card';
+  card.dataset.questionId = question.id;
+  card.dataset.questionType = question.type;
+
+  // 问题标题
+  const title = document.createElement('div');
+  title.className = 'onboarding-v8__card-title';
+  title.textContent = `${index + 1}. ${question.question || ''}`;
+  card.appendChild(title);
+
+  // 问题描述
+  if (question.description) {
+    const desc = document.createElement('div');
+    desc.className = 'onboarding-v8__card-desc';
+    desc.textContent = question.description;
+    card.appendChild(desc);
+  }
+
+  // 根据类型渲染输入区
+  const body = document.createElement('div');
+  body.className = 'onboarding-v8__card-body';
+
+  const type = question.type;
+  const options = Array.isArray(question.options) ? question.options : [];
+  const allowOther = !!question.allowOther;
+  const maxSelect = question.maxSelect || 0;
+
+  if (type === 'text') {
+    // 文本题：输入框 + AI 建议按钮
+    const inputRow = document.createElement('div');
+    inputRow.className = 'onboarding-v8__text-input-row';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'onboarding-v8__card-input';
+    input.placeholder = question.otherPlaceholder || '请输入…';
+    input.maxLength = 500;
+    input.dataset.questionId = question.id;
+    input.addEventListener('input', () => {
+      const val = input.value.trim();
+      if (val) {
+        onboardingV8State.cardAnswers[question.id] = {
+          questionId: question.id,
+          fieldPaths: question.fieldPaths,
+          answerType: 'text',
+          customText: val,
+          usedSuggestedAnswer: input.dataset.isSuggestion === '1'
+        };
+      } else {
+        delete onboardingV8State.cardAnswers[question.id];
+      }
+      // 清除"AI建议"标记
+      if (input.dataset.isSuggestion === '1' && val) {
+        input.dataset.isSuggestion = '0';
+        input.classList.remove('onboarding-v8__card-input--suggestion');
+      }
+      updateOnboardingV8SubmitButton();
+      schedulePendingAnswersSave(); // P2: debounce 保存未提交选择
+    });
+    inputRow.appendChild(input);
+
+    // AI 建议按钮（仅 text 题）
+    const suggestBtn = document.createElement('button');
+    suggestBtn.type = 'button';
+    suggestBtn.className = 'onboarding-v8__suggest-btn';
+    suggestBtn.textContent = 'AI帮我建议';
+    suggestBtn.addEventListener('click', () => {
+      requestOnboardingV8Suggestion(question.id, input, suggestBtn);
+    });
+    inputRow.appendChild(suggestBtn);
+    body.appendChild(inputRow);
+  } else if (type === 'single_choice' || type === 'multiple_choice' || type === 'hybrid') {
+    // 选项气泡
+    const optionsWrap = document.createElement('div');
+    optionsWrap.className = 'onboarding-v8__options';
+    const isMulti = type === 'multiple_choice' || (type === 'hybrid' && maxSelect > 1);
+
+    options.forEach((opt) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'onboarding-v8__option';
+      btn.textContent = opt.label || '';
+      btn.dataset.optionId = opt.id;
+      btn.dataset.optionValue = typeof opt.value === 'string' ? opt.value : JSON.stringify(opt.value);
+      btn.addEventListener('click', () => {
+        if (isMulti) {
+          // 多选：切换选中状态
+          if (btn.classList.contains('is-selected')) {
+            btn.classList.remove('is-selected');
+          } else {
+            // 检查 maxSelect 限制
+            if (maxSelect > 0) {
+              const selected = optionsWrap.querySelectorAll('.onboarding-v8__option.is-selected');
+              if (selected.length >= maxSelect) {
+                return; // 超过最大选择数，忽略
+              }
+            }
+            btn.classList.add('is-selected');
+          }
+        } else {
+          // 单选：清除同组其他选中
+          optionsWrap.querySelectorAll('.onboarding-v8__option').forEach((b) => b.classList.remove('is-selected'));
+          btn.classList.add('is-selected');
+        }
+        collectOnboardingV8CardAnswer(question, optionsWrap, otherInput);
+        updateOnboardingV8SubmitButton();
+        schedulePendingAnswersSave(); // P2: debounce 保存未提交选择
+      });
+      optionsWrap.appendChild(btn);
+    });
+
+    body.appendChild(optionsWrap);
+
+    // "其他"输入框（allowOther 或 hybrid）
+    let otherInput = null;
+    if (allowOther || type === 'hybrid') {
+      const otherRow = document.createElement('div');
+      otherRow.className = 'onboarding-v8__other-row';
+      const otherLabel = document.createElement('span');
+      otherLabel.className = 'onboarding-v8__other-label';
+      otherLabel.textContent = '其他：';
+      otherInput = document.createElement('input');
+      otherInput.type = 'text';
+      otherInput.className = 'onboarding-v8__card-input onboarding-v8__card-input--other';
+      otherInput.placeholder = question.otherPlaceholder || '请描述…';
+      otherInput.maxLength = 500;
+      otherInput.addEventListener('input', () => {
+        collectOnboardingV8CardAnswer(question, optionsWrap, otherInput);
+        updateOnboardingV8SubmitButton();
+        schedulePendingAnswersSave(); // P2: debounce 保存未提交选择
+      });
+      otherRow.appendChild(otherLabel);
+      otherRow.appendChild(otherInput);
+      body.appendChild(otherRow);
+    }
+  }
+
+  card.appendChild(body);
+
+  // 必填标记
+  if (question.required) {
+    const req = document.createElement('div');
+    req.className = 'onboarding-v8__card-required';
+    req.textContent = '* 必填';
+    card.appendChild(req);
+  }
+
+  return card;
+}
+
+/**
+ * 收集单张卡片的回答到 cardAnswers。
+ * 安全约束：不发送 selectedValues，后端从 checkpoint 的 question.options 重新映射
+ */
+function collectOnboardingV8CardAnswer(question, optionsWrap, otherInput) {
+  const selected = optionsWrap.querySelectorAll('.onboarding-v8__option.is-selected');
+  const selectedOptionIds = Array.from(selected).map((b) => b.dataset.optionId);
+  const customText = otherInput ? otherInput.value.trim() : '';
+
+  // 无任何回答
+  if (selectedOptionIds.length === 0 && !customText) {
+    delete onboardingV8State.cardAnswers[question.id];
+    return;
+  }
+
+  // 确定回答类型
+  let answerType = question.type;
+  if (question.type === 'hybrid') {
+    if (selectedOptionIds.length > 0 && customText) {
+      answerType = 'hybrid';
+    } else if (selectedOptionIds.length > 0) {
+      answerType = selectedOptionIds.length > 1 ? 'multiple_choice' : 'single_choice';
+    } else {
+      answerType = 'text';
+    }
+  }
+
+  const answer = {
+    questionId: question.id,
+    fieldPaths: question.fieldPaths,
+    answerType,
+    selectedOptionIds: selectedOptionIds.length > 0 ? selectedOptionIds : undefined,
+    customText: customText || undefined,
+    usedSuggestedAnswer: otherInput ? otherInput.dataset.isSuggestion === '1' : undefined
+  };
+  onboardingV8State.cardAnswers[question.id] = answer;
+}
+
+/**
+ * 更新提交按钮状态：所有必填问题已回答才启用。
+ */
+function updateOnboardingV8SubmitButton() {
+  if (!onboardingV8SubmitCardsBtn) return;
+  const questions = onboardingV8State.currentQuestions || [];
+  for (const q of questions) {
+    if (q.required && !onboardingV8State.cardAnswers[q.id]) {
+      onboardingV8SubmitCardsBtn.disabled = true;
+      return;
+    }
+  }
+  onboardingV8SubmitCardsBtn.disabled = questions.length === 0;
+}
+
+/**
+ * 收集所有卡片回答，返回 OnboardingQuestionAnswer[]。
+ */
+function collectOnboardingV8CardAnswers() {
+  const questions = onboardingV8State.currentQuestions || [];
+  const answers = [];
+  for (const q of questions) {
+    const a = onboardingV8State.cardAnswers[q.id];
+    if (a) {
+      answers.push(a);
+    }
+  }
+  return answers;
+}
+
+/**
+ * 提交 V9 结构化卡片回答。
+ */
+async function submitOnboardingV8CardAnswers() {
+  if (onboardingV8State.pendingBusy) return;
+  const answers = collectOnboardingV8CardAnswers();
+  if (answers.length === 0) return;
+
+  // P2: 提交前清除 pendingAnswers（提交成功后 Graph 保存新 checkpoint 会自然清除，
+  // 但显式清除可防止提交失败时残留过期临时答案）
+  clearPendingAnswers();
+
+  onboardingV8State.lastOperation = 'card-answers';
+  onboardingV8State.lastAnswer = '';
+  onboardingV8State.lastRevision = onboardingV8State.revision;
+  onboardingV8State.pendingBusy = true;
+  setOnboardingV8Phase('busy');
+  if (onboardingV8Busy) {
+    const busyText = onboardingV8Busy.querySelector('.onboarding-v8__busy-text');
+    if (busyText) busyText.textContent = '正在处理回答…';
+  }
+  try {
+    const resp = await window.petAPI?.onboardingSubmitAnswers?.(answers, onboardingV8State.revision);
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    onboardingV8State.pendingBusy = false;
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `提交失败：${error?.message || error}`;
+    }
+  }
+}
+
+/**
+ * 请求 AI 建议答案，填入输入框（标记为"AI建议，可修改"）。
+ * 不直接保存到 Draft，用户提交后才正式确认。
+ */
+async function requestOnboardingV8Suggestion(questionId, inputEl, suggestBtn) {
+  if (!questionId || !inputEl) return;
+  if (suggestBtn) {
+    suggestBtn.disabled = true;
+    suggestBtn.textContent = '生成中…';
+  }
+  try {
+    const result = await window.petAPI?.onboardingSuggest?.(questionId, onboardingV8State.revision);
+    if (result && result.ok && result.suggestion) {
+      inputEl.value = result.suggestion;
+      inputEl.dataset.isSuggestion = '1';
+      inputEl.classList.add('onboarding-v8__card-input--suggestion');
+      // 触发 input 事件，更新 cardAnswers
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      // 显示"AI建议，可修改"提示
+      const hint = inputEl.parentElement?.querySelector('.onboarding-v8__suggestion-hint');
+      if (hint) {
+        hint.textContent = 'AI建议，可修改';
+        hint.classList.remove('hidden');
+      }
+    } else {
+      const reason = result?.reason || '生成失败';
+      showBubble(`AI建议生成失败：${reason}`, 4000);
+    }
+  } catch (error) {
+    showBubble(`AI建议请求失败：${error?.message || error}`, 4000);
+  } finally {
+    if (suggestBtn) {
+      suggestBtn.disabled = false;
+      suggestBtn.textContent = 'AI帮我建议';
+    }
+  }
+}
+
+/**
+ * V9: 渲染摘要区块（按阶段分区，每块带"修改"按钮）。
+ * 简单实现：将 summaryDisplayText 按行分割，识别阶段标签，生成区块。
+ */
+function renderOnboardingV8SummaryBlocks(summaryText, currentStage) {
+  if (!onboardingV8SummaryBlocks) return;
+  onboardingV8SummaryBlocks.innerHTML = '';
+
+  // 兼容旧版纯文本摘要
+  if (onboardingV8Summary && summaryText) {
+    onboardingV8Summary.textContent = summaryText;
+  }
+
+  if (!summaryText) {
+    onboardingV8SummaryBlocks.classList.add('hidden');
+    if (onboardingV8Summary) onboardingV8Summary.classList.remove('hidden');
+    return;
+  }
+
+  onboardingV8SummaryBlocks.classList.remove('hidden');
+  if (onboardingV8Summary) onboardingV8Summary.classList.add('hidden');
+
+  // 按阶段标签分割（【基础信息】【说话风格】等）
+  const stagePattern = /【(基础信息|说话风格|关系边界|角色禁区|确认阶段)】/;
+  const lines = summaryText.split('\n');
+  const blocks = [];
+  let currentBlock = null;
+
+  for (const line of lines) {
+    const match = line.match(stagePattern);
+    if (match) {
+      if (currentBlock) blocks.push(currentBlock);
+      currentBlock = { stage: match[1], content: [] };
+    } else if (currentBlock) {
+      currentBlock.content.push(line);
+    } else {
+      // 没有阶段标签的前导内容，作为"总览"块
+      currentBlock = { stage: '总览', content: [line] };
+    }
+  }
+  if (currentBlock) blocks.push(currentBlock);
+
+  // 渲染每个区块
+  for (const block of blocks) {
+    const blockEl = document.createElement('div');
+    blockEl.className = 'onboarding-v8__summary-block';
+
+    const head = document.createElement('div');
+    head.className = 'onboarding-v8__summary-block-head';
+    const title = document.createElement('span');
+    title.className = 'onboarding-v8__summary-block-title';
+    title.textContent = block.stage;
+    head.appendChild(title);
+
+    // "修改"按钮（"总览"块不显示修改按钮）
+    if (block.stage !== '总览' && block.stage !== '确认阶段') {
+      const reviseBtn = document.createElement('button');
+      reviseBtn.type = 'button';
+      reviseBtn.className = 'onboarding-v8__summary-block-revise';
+      reviseBtn.textContent = '修改';
+      reviseBtn.dataset.stage = block.stage;
+      reviseBtn.addEventListener('click', () => {
+        reviseOnboardingV8Block(block.stage);
+      });
+      head.appendChild(reviseBtn);
+    }
+    blockEl.appendChild(head);
+
+    const content = document.createElement('div');
+    content.className = 'onboarding-v8__summary-block-content';
+    content.textContent = block.content.join('\n').trim();
+    blockEl.appendChild(content);
+
+    onboardingV8SummaryBlocks.appendChild(blockEl);
+  }
+}
+
+/**
+ * V9: 局部修改某区块。
+ * 点击摘要区块的"修改"按钮，传入 targetStage 参数。
+ * P1: targetStage 存在时，后端确定性地为该阶段生成问题卡片，不调用 AnswerExtractor。
+ */
+async function reviseOnboardingV8Block(stageName) {
+  if (onboardingV8State.pendingBusy) return;
+  const stageMap = {
+    '基础信息': 'basic',
+    '说话风格': 'speaking',
+    '关系边界': 'relationship',
+    '角色禁区': 'taboos'
+  };
+  const stageKey = stageMap[stageName] || 'basic';
+  const feedback = `我想修改${stageName}部分`;
+  onboardingV8State.lastOperation = 'feedback';
+  onboardingV8State.lastAnswer = feedback;
+  onboardingV8State.lastRevision = onboardingV8State.revision;
+  onboardingV8State.pendingBusy = true;
+  setOnboardingV8Phase('busy');
+  try {
+    const resp = await window.petAPI?.onboardingReviseSummary?.(feedback, onboardingV8State.revision, stageKey);
+    handleOnboardingV8Response(resp);
+  } catch (error) {
+    onboardingV8State.pendingBusy = false;
+    setOnboardingV8Phase('error');
+    if (onboardingV8ErrorText) {
+      onboardingV8ErrorText.textContent = `返回修改失败：${error?.message || error}`;
+    }
+  }
+}
+
 function renderChatLog() {
   chatLog.innerHTML = '';
   const visibleItems = chatHistory.slice(-50);
   for (const item of visibleItems) {
     const entry = document.createElement('div');
-    entry.className = `chat-msg chat-msg--${item.role}${item.tone ? ` chat-msg--${item.tone}` : ''}`;
+    const isEntering = !item.animated;
+    entry.className = `chat-msg chat-msg--${item.role}${item.tone ? ` chat-msg--${item.tone}` : ''}${item.isThinking ? ' chat-msg--thinking' : ''}${isEntering ? ' chat-msg--enter' : ''}`;
     const content = document.createElement('div');
     content.className = 'chat-msg__content';
-    content.textContent = item.content;
+    if (item.isThinking) {
+      const text = document.createElement('span');
+      text.textContent = item.content;
+      const dots = document.createElement('span');
+      dots.className = 'chat-msg__thinking-dots';
+      dots.innerHTML = '<span></span><span></span><span></span>';
+      content.appendChild(text);
+      content.appendChild(dots);
+    } else {
+      content.textContent = item.content;
+    }
     entry.appendChild(content);
     if (item.pendingShellAction) {
       const actions = document.createElement('div');
@@ -1421,6 +2649,7 @@ function renderChatLog() {
       entry.appendChild(actions);
     }
     chatLog.appendChild(entry);
+    item.animated = true;
   }
   chatLog.scrollTop = chatLog.scrollHeight;
 }
@@ -1431,6 +2660,23 @@ function pushChat(role, content, options = {}) {
     chatHistory = chatHistory.slice(-50);
   }
   renderChatLog();
+}
+
+/** 在聊天日志中显示 AI 思考中指示器 */
+function addChatThinkingIndicator() {
+  chatHistory.push({ role: 'assistant', content: t('thinking'), isThinking: true, excludeFromAi: true });
+  if (chatHistory.length > 50) {
+    chatHistory = chatHistory.slice(-50);
+  }
+  renderChatLog();
+}
+
+/** 移除聊天日志中的 AI 思考中指示器 */
+function removeChatThinkingIndicator() {
+  const idx = chatHistory.findIndex((item) => item.isThinking);
+  if (idx >= 0) {
+    chatHistory.splice(idx, 1);
+  }
 }
 
 async function handlePendingShellAction(item, shouldConfirm) {
@@ -1485,6 +2731,7 @@ async function sendChatMessage(event) {
     pushChat('user', message);
     setState('waiting');
     showBubble(t('thinking'), 6000);
+    addChatThinkingIndicator();
 
     try {
       await window.petAPI?.analyzeAndApplyMemory?.(message);
@@ -1496,11 +2743,13 @@ async function sendChatMessage(event) {
       history: chatHistory.filter((item) => !item.excludeFromAi).slice(0, -1)
     });
     const reply = result?.reply || t('emptyReply');
+    removeChatThinkingIndicator();
     pushChat('assistant', reply);
     showBubble(reply, 14000);
     setState(getResponseAnimationState(result?.emotion));
     restoreTimers = [setTimeout(() => setState('idle'), getResponseAnimationDuration())];
   } catch {
+    removeChatThinkingIndicator();
     const fallback = t('apiFailed');
     pushChat('assistant', fallback);
     showBubble(fallback, 9000);
@@ -1518,8 +2767,10 @@ let planningMode = false;
 let planningBusy = false;
 let currentDraftPlan = null;
 let planBubbleSpaceActive = false;
+let planningThinkingElement = null;
 const PLANNING_EXTRA_HEIGHT = 620;
 const CHAT_EXTRA_HEIGHT = 360;
+const PANEL_EXTRA_HEIGHT = 540;
 
 /** 简易 HTML 转义 */
 function escapeHtml(text) {
@@ -1530,6 +2781,12 @@ function escapeHtml(text) {
 
 /** 切换计划模式 */
 async function togglePlanningMode() {
+  // W4: 未完成角色初始化的用户不得进入计划
+  if (onboardingV8State.phase !== 'locked') {
+    showBubble('请先完成角色初始化向导后再使用计划功能', 5000);
+    openOnboardingPanel('请先完成角色初始化');
+    return;
+  }
   if (planningMode) {
     exitPlanningMode();
   } else {
@@ -1538,9 +2795,9 @@ async function togglePlanningMode() {
 }
 
 /** 进入计划模式 */
-async function enterPlanningMode() {
+async function enterPlanningMode(initialResult = null) {
   // 如果已有 active 计划，直接显示气泡而非重新制定
-  const result = await window.petAPI?.startPlanningMode?.();
+  const result = initialResult || await window.petAPI?.startPlanningMode?.();
   if (result?.activePlan) {
     const tasks = result.activePlan.tasks || [];
     const allCompleted = tasks.length > 0 && tasks.every((t) => t.completed);
@@ -1559,6 +2816,7 @@ async function enterPlanningMode() {
   }
   planningMode = true;
   chatPanel.classList.remove('hidden');
+  chatPanel.classList.add('chat-panel--planning');
   // 从普通聊天扩展切换到计划扩展，避免重复占用空间
   window.petAPI?.releaseChatSpace?.();
   window.petAPI?.requestPlanningSpace?.(PLANNING_EXTRA_HEIGHT);
@@ -1589,14 +2847,15 @@ async function enterPlanningMode() {
 }
 
 /** 退出计划模式 */
-function exitPlanningMode() {
+function exitPlanningMode(keepChatOpen = true) {
   planningMode = false;
+  chatPanel.classList.remove('chat-panel--planning');
   planningView.classList.remove('planning-view--enter');
   planningView.classList.add('planning-view--leave');
   chatLog.classList.remove('hidden');
   window.petAPI?.releasePlanningSpace?.();
   // 退出规划后如果聊天面板仍打开则切回普通聊天扩展
-  if (!chatPanel.classList.contains('hidden')) {
+  if (keepChatOpen && !chatPanel.classList.contains('hidden')) {
     window.petAPI?.requestChatSpace?.(CHAT_EXTRA_HEIGHT);
   }
   setTimeout(() => {
@@ -1618,9 +2877,14 @@ async function sendPlanningMessage(event) {
   chatSend.disabled = true;
   chatInput.value = '';
   appendPlanningMessage('user', message);
+  appendPlanningMessage('assistant', t('thinking'), true);
 
   try {
     const result = await window.petAPI?.submitPlanningMessage?.(message);
+    if (planningThinkingElement) {
+      planningThinkingElement.remove();
+      planningThinkingElement = null;
+    }
     if (!result?.ok) {
       appendPlanningMessage('assistant', result?.reason || '生成失败');
       return;
@@ -1639,6 +2903,10 @@ async function sendPlanningMessage(event) {
     }
     refreshPlanningModelInfo();
   } catch (e) {
+    if (planningThinkingElement) {
+      planningThinkingElement.remove();
+      planningThinkingElement = null;
+    }
     appendPlanningMessage('assistant', '计划生成失败：' + (e?.message || ''));
   } finally {
     planningBusy = false;
@@ -1651,11 +2919,17 @@ async function sendPlanningMessage(event) {
  * 追加 Planning 对话消息（独立消息历史，不混入聊天 chatLog）。
  * 要求 11：计划模式增加独立消息历史，草案卡片与对话同时显示。
  */
-function appendPlanningMessage(role, text) {
+function appendPlanningMessage(role, text, isThinking = false) {
   if (!planningConversation) return;
   const el = document.createElement('div');
-  el.className = 'planning-conversation__msg planning-conversation__msg--' + role;
-  el.textContent = text;
+  el.className = 'planning-conversation__msg planning-conversation__msg--' + role + ' planning-conversation__msg--enter';
+  if (isThinking) {
+    el.classList.add('planning-conversation__msg--thinking');
+    el.innerHTML = `<span>${escapeHtml(text)}</span><span class="planning-conversation__thinking-dots"><span></span><span></span><span></span></span>`;
+    planningThinkingElement = el;
+  } else {
+    el.textContent = text;
+  }
   planningConversation.appendChild(el);
   planningConversation.scrollTop = planningConversation.scrollHeight;
 }
@@ -1665,6 +2939,7 @@ function clearPlanningConversation() {
   if (planningConversation) {
     planningConversation.innerHTML = '';
   }
+  planningThinkingElement = null;
 }
 
 /**
@@ -1972,7 +3247,12 @@ async function saveDraftChanges() {
 async function confirmPlan() {
   try {
     await saveDraftChanges();
+    appendPlanningMessage('assistant', t('thinking'), true);
     const result = await window.petAPI?.confirmPlan?.();
+    if (planningThinkingElement) {
+      planningThinkingElement.remove();
+      planningThinkingElement = null;
+    }
     if (result?.ok) {
       if (result.published) {
         // 先退出计划模式释放扩展空间，再显示计划气泡请求气泡空间，
@@ -1988,6 +3268,10 @@ async function confirmPlan() {
     }
     refreshPlanningModelInfo();
   } catch (e) {
+    if (planningThinkingElement) {
+      planningThinkingElement.remove();
+      planningThinkingElement = null;
+    }
     showBubble('确认失败：' + (e?.message || ''), 6000);
   }
 }
@@ -2001,9 +3285,14 @@ async function revisePlan() {
   chatSend.disabled = true;
   revisePlanInput.value = '';
   appendPlanningMessage('user', feedback);
+  appendPlanningMessage('assistant', t('thinking'), true);
 
   try {
     const result = await window.petAPI?.revisePlan?.(feedback);
+    if (planningThinkingElement) {
+      planningThinkingElement.remove();
+      planningThinkingElement = null;
+    }
     if (result?.ok) {
       if (result.plan) {
         renderPlanDraft(result.plan);
@@ -2016,6 +3305,10 @@ async function revisePlan() {
     }
     refreshPlanningModelInfo();
   } catch (e) {
+    if (planningThinkingElement) {
+      planningThinkingElement.remove();
+      planningThinkingElement = null;
+    }
     appendPlanningMessage('assistant', '修改失败：' + (e?.message || ''));
   } finally {
     planningBusy = false;
@@ -2149,10 +3442,18 @@ function getTodayDateString() {
 
 /** 打开日历面板 */
 async function openCalendarPanel() {
+  // W4: 未完成角色初始化的用户不得进入日历
+  if (onboardingV8State.phase !== 'locked') {
+    showBubble('请先完成角色初始化向导后再使用日历功能', 5000);
+    openOnboardingPanel('请先完成角色初始化');
+    return;
+  }
+  closeMaterialPanel();
+  closeOnboardingPanel();
+  closeApiPanel();
+  closeStatePanel();
+  closeChatPanel();
   calendarPanel.classList.remove('hidden');
-  // 关闭其他面板避免重叠
-  if (!statePanel.classList.contains('hidden')) closeStatePanel();
-  if (!apiPanel.classList.contains('hidden')) closeApiPanel();
   // 请求扩大窗口高度以容纳日历
   window.petAPI?.requestChatSpace?.(CALENDAR_EXTRA_HEIGHT);
   // 默认显示当月
@@ -2166,11 +3467,12 @@ async function openCalendarPanel() {
 
 /** 关闭日历面板 */
 function closeCalendarPanel() {
+  const wasOpen = !calendarPanel.classList.contains('hidden');
   calendarPanel.classList.add('hidden');
   calendarDetail.classList.add('hidden');
   calendarSelectedDate = '';
   calendarDetailPlan = null;
-  window.petAPI?.releaseChatSpace?.();
+  if (wasOpen) window.petAPI?.releaseChatSpace?.();
 }
 
 /** 刷新月视图（不调用模型） */
@@ -2359,14 +3661,13 @@ async function calendarEditCurrentPlan() {
   if (!calendarDetailPlan) return;
   const targetDate = calendarDetailPlan.date || calendarSelectedDate;
   closeCalendarPanel();
-  // 进入计划模式
-  await enterPlanningMode();
-  // 如果当前计划不是今天的草案，需要通过 calendar:open-planning 切换 planningThreadId
-  // 这里使用 openPlanningWithDate 不发送消息，只设置 targetDate
   try {
-    await window.petAPI?.openPlanningWithDate?.(targetDate, '');
+    const result = await window.petAPI?.openPlanningWithDate?.(targetDate, '');
+    if (!result?.ok) throw new Error(result?.reason || '无法打开该日期的计划');
+    await enterPlanningMode(result);
   } catch (e) {
     console.error('[calendar] open planning with date failed:', e);
+    showBubble('打开计划失败：' + (e?.message || ''), 6000);
   }
   // 刷新计划对话状态
   await refreshPlanningModelInfo();
@@ -2377,11 +3678,14 @@ async function calendarCreateForDate() {
   if (!calendarSelectedDate) return;
   const targetDate = calendarSelectedDate;
   closeCalendarPanel();
-  await enterPlanningMode();
   try {
-    await window.petAPI?.openPlanningWithDate?.(targetDate, '');
+    const result = await window.petAPI?.openPlanningWithDate?.(targetDate, '');
+    if (!result?.ok) throw new Error(result?.reason || '无法打开该日期');
+    await enterPlanningMode(result);
   } catch (e) {
     console.error('[calendar] open planning for date failed:', e);
+    showBubble('打开计划失败：' + (e?.message || ''), 6000);
+    return;
   }
   appendPlanningMessage('assistant', `好的，我们为 ${targetDate} 制定计划，告诉我你的目标。`);
   await refreshPlanningModelInfo();
@@ -2427,6 +3731,10 @@ bindEvent(calendarEditPlan, 'click', calendarEditCurrentPlan);
 bindEvent(calendarCreatePlan, 'click', calendarCreateForDate);
 bindEvent(stateToggle, 'click', openStatePanel);
 bindEvent(stateClose, 'click', closeStatePanel);
+bindEvent(materialLibraryBtn, 'click', openMaterialPanel);
+bindEvent(materialBack, 'click', returnToStateFromMaterialPanel);
+bindEvent(importMaterialBtn, 'click', importMaterial);
+bindEvent(restoreDefaultMaterialBtn, 'click', restoreDefaultMaterial);
 bindEvent(languageToggle, 'click', toggleLanguage);
 bindEvent(clearExpiredShortTerm, 'click', async () => {
   try {
@@ -2443,6 +3751,8 @@ bindEvent(clearLongTermMemory, 'click', () => clearMemoryType('longTerm'));
 bindEvent(clearShortTermMemory, 'click', () => clearMemoryType('shortTerm'));
 bindEvent(clearAllMemory, 'click', clearAllMemoryTypes);
 bindEvent(exportMemory, 'click', exportMemoryData);
+bindEvent(resetCharacterBtn, 'click', resetCharacter);
+bindEvent(resetUserDataBtn, 'click', resetUserData);
 bindEvent(refreshReminders, 'click', loadReminders);
 bindEvent(triggerDailyDigestBtn, 'click', triggerDailyDigest);
 bindEvent(triggerReminderCheckBtn, 'click', triggerReminderCheck);
@@ -2498,8 +3808,12 @@ window.petAPI?.onProactiveEvent?.((dto) => {
 // Onboarding 请求（首次配置由 Graph 推送给用户）
 window.petAPI?.onOnboardingRequest?.((dto) => {
   if (!dto) return;
+  // 防御性兜底：已锁定角色不应再接收 onboarding 请求打开面板
+  if (onboardingV8State.phase === 'locked') return;
   const message = dto.text || '请输入你的昵称和称呼偏好。';
-  openOnboardingPanel(message);
+  // openOnboardingPanel 是 async：V10 先查询后端状态再决定是否展示面板
+  // 即使当前 phase 还是初始 'busy'，也不会错误地弹出已锁定界面
+  void openOnboardingPanel(message);
   if (dto.expression) {
     clearRestoreTimers();
     setState(dto.expression);
@@ -2507,9 +3821,55 @@ window.petAPI?.onOnboardingRequest?.((dto) => {
   }
 });
 
-// Onboarding 表单提交
+// Onboarding 表单提交（旧版兼容）
 if (onboardingForm) {
   onboardingForm.addEventListener('submit', submitOnboarding);
+}
+
+// V8 角色初始化向导事件绑定
+if (onboardingV8Form) {
+  onboardingV8Form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const answer = (onboardingV8Answer?.value || '').trim();
+    if (!answer) return;
+    submitOnboardingV8Answer(answer);
+  });
+}
+
+if (onboardingV8ReviewForm) {
+  onboardingV8ReviewForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    confirmOnboardingV8Summary();
+  });
+}
+
+if (onboardingV8ReviseBtn) {
+  onboardingV8ReviseBtn.addEventListener('click', () => {
+    reviseOnboardingV8Summary();
+  });
+}
+
+if (onboardingV8RetryBtn) {
+  onboardingV8RetryBtn.addEventListener('click', () => {
+    retryOnboardingV8();
+  });
+}
+
+if (onboardingV8CloseBtn) {
+  onboardingV8CloseBtn.addEventListener('click', () => {
+    closeOnboardingPanel();
+    showBubble('角色配置已锁定，很高兴认识你！', 7000);
+    setState('waving');
+    clearRestoreTimers();
+    restoreTimers = [setTimeout(() => setState('idle'), 6500)];
+  });
+}
+
+// V9 问题卡片提交按钮
+if (onboardingV8SubmitCardsBtn) {
+  onboardingV8SubmitCardsBtn.addEventListener('click', () => {
+    submitOnboardingV8CardAnswers();
+  });
 }
 
 applyPetProfile();
@@ -2519,3 +3879,30 @@ restartAnimation();
 scheduleReminder();
 startClockWatcher();
 setTimeout(() => showBubble(t('startupBubble'), 7000), 1200);
+
+// V8 角色初始化：启动后异步同步一次后端状态，避免已锁定角色在首次交互时被误判为未初始化
+setTimeout(() => {
+  if (!onboardingV8 || !window.petAPI?.onboardingGetState) return;
+  window.petAPI.onboardingGetState()
+    .then((resp) => {
+      if (!resp) return;
+      onboardingV8State.revision = resp.revision || 0;
+      onboardingV8State.traceId = resp.traceId || '';
+      if (resp.isCompleted || resp.phase === 'locked') {
+        onboardingV8State._v8Initialized = true;
+        onboardingV8State.phase = 'locked';
+      } else if (resp.phase === 'review') {
+        onboardingV8State._v8Initialized = true;
+        onboardingV8State.phase = 'review';
+      } else if (resp.phase === 'error') {
+        // 错误时保持未初始化，让后续 openOnboardingPanel 再次尝试
+        onboardingV8State.phase = 'error';
+      } else {
+        onboardingV8State._v8Initialized = true;
+        onboardingV8State.phase = 'collecting';
+      }
+    })
+    .catch(() => {
+      // 失败时保持默认未初始化状态，后续 openOnboardingPanel 会再次尝试
+    });
+}, 2500);

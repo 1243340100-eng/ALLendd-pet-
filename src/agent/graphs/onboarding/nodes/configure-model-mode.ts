@@ -21,7 +21,7 @@ export async function configureModelMode(
   log.info('model mode set', { fields: { mode } });
 
   return {
-    currentStep: 'save_onboarding_result',
+    currentStep: 'persist_and_lock',
     modelMode: mode
   };
 }

@@ -104,7 +104,7 @@ function buildSystemPrompt(stage: OnboardingStage, crossStage?: boolean): string
     '字段说明：',
     '- characterName: 角色名字（字符串）',
     '- characterIdentity: 角色身份和世界观设定（字符串）',
-    '- userPetName: 角色对用户的称呼（字符串）',
+    '- userPetName: 桌宠对用户的称呼（字符串）',
     '- selfPetName: 角色自称（字符串）',
     '- referenceCharacter: 参考的已有角色名（字符串）',
     '- keepTraits: 想保留的参考特质（字符串数组）',

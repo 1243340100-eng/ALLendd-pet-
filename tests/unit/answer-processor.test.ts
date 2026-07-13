@@ -358,6 +358,60 @@ function testPureFreeText(): void {
     result.freeTextFields.includes('characterName') === true);
 }
 
+// ===== 测试 10：hybrid 无 options + 纯文本回答（taboos 阶段场景） =====
+function testHybridNoOptionsTextOnly(): void {
+  console.log('\n--- 测试 10：hybrid 无 options + 纯文本回答（taboos 阶段 cannotSay） ---');
+  // taboos 阶段的 cannotSay/cannotBecome/cannotDo 都是 hybrid 类型且无 options
+  // 用户只能填自由文本，前端 answerType 可能是 'text' 或 'hybrid'
+  // 后端必须接受这两种 answerType，不报类型不匹配错误
+  const hybridNoOptionsQuestion = buildQuestion({
+    id: 'cannotSay',
+    fieldPaths: ['cannotSay'],
+    type: 'hybrid',
+    question: '角色不能说什么？',
+    options: undefined,
+    allowOther: true,
+    required: false
+  });
+
+  // 场景 A：前端传 answerType='text'（修复前会报错）
+  const inputA = buildInput({
+    currentQuestions: [hybridNoOptionsQuestion],
+    answers: [buildAnswer({
+      questionId: 'cannotSay',
+      fieldPaths: ['cannotSay'],
+      answerType: 'text',
+      selectedOptionIds: undefined,
+      customText: '不能说脏话'
+    })],
+    currentStage: 'taboos'
+  });
+  const resultA = processAnswers(inputA);
+  check('10.1 hybrid 无 options + answerType=text → 无错误', resultA.errors.length === 0);
+  check('10.2 freeText 非空', resultA.freeText.length > 0);
+  check('10.3 freeText 包含"不能说脏话"', resultA.freeText.includes('不能说脏话') === true);
+  check('10.4 freeTextFields 包含 cannotSay',
+    resultA.freeTextFields.includes('cannotSay') === true);
+  check('10.5 directExtraction.updates 为空（纯文本不产生直接 updates）',
+    resultA.directExtraction.updates.length === 0);
+
+  // 场景 B：前端传 answerType='hybrid'（也必须接受）
+  const inputB = buildInput({
+    currentQuestions: [hybridNoOptionsQuestion],
+    answers: [buildAnswer({
+      questionId: 'cannotSay',
+      fieldPaths: ['cannotSay'],
+      answerType: 'hybrid',
+      selectedOptionIds: undefined,
+      customText: '不能说脏话'
+    })],
+    currentStage: 'taboos'
+  });
+  const resultB = processAnswers(inputB);
+  check('10.6 hybrid 无 options + answerType=hybrid → 无错误', resultB.errors.length === 0);
+  check('10.7 freeText 非空', resultB.freeText.length > 0);
+}
+
 // ===== 运行所有测试 =====
 function main(): void {
   console.log('=== AnswerProcessor 单元测试（M2） ===');
@@ -370,6 +424,7 @@ function main(): void {
   testStringReselect();
   testNonExistentQuestion();
   testPureFreeText();
+  testHybridNoOptionsTextOnly();
 
   console.log(`\n=== 结果：${pass} 通过，${fail} 失败 ===`);
   if (fail > 0) {

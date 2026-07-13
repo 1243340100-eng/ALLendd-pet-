@@ -92,6 +92,7 @@ const triggerDailyDigestBtn = document.getElementById('triggerDailyDigest');
 const triggerReminderCheckBtn = document.getElementById('triggerReminderCheck');
 // Onboarding 首次配置面板
 const onboardingPanel = document.getElementById('onboardingPanel');
+const onboardingClose = document.getElementById('onboardingClose');
 const onboardingMessage = document.getElementById('onboardingMessage');
 const onboardingForm = document.getElementById('onboardingForm');
 const obNickname = document.getElementById('obNickname');
@@ -900,7 +901,14 @@ async function saveApiSettings(clearApiKey = false) {
     // 同步保存 planningModel 配置（持久化到 app_settings.model_alias_planning）
     const planningModelValue = planningModelInput.value.trim();
     if (planningModelValue) {
-      await window.petAPI?.setPlanningModel?.(planningModelValue);
+      try {
+        await window.petAPI?.setPlanningModel?.(planningModelValue);
+      } catch (error) {
+        // API Key 已经由上一步成功保存。计划模型别名属于可选配置，
+        // 不能因为它保存失败就阻断角色初始化或把整个 API 保存显示为失败。
+        console.warn('Planning model setting save failed; API configuration remains valid.', error);
+        showBubble('API 已保存，但计划模型设置暂未更新。', 5000);
+      }
     }
     apiKey.value = '';
     apiKey.dataset.saved = config?.hasApiKey ? 'true' : 'false';
@@ -914,6 +922,10 @@ async function saveApiSettings(clearApiKey = false) {
     }
     if (config?.hasApiKey && onboardingV8State.phase === 'api-required') {
       showBubble('API 已保存，现在可以开始角色初始化。', 5000);
+      // API 缺失期间的只读启动同步可能已经触碰过 onboarding 状态。
+      // 保存 Key 后必须强制重新从后端恢复/启动，不能把旧的 renderer 缓存
+      // 当成“向导已经初始化”，否则只会显示外层面板而没有问题卡片。
+      onboardingV8State._v8Initialized = false;
       await openOnboardingPanel();
     }
   } catch {
@@ -1599,7 +1611,12 @@ async function openOnboardingPanel(message) {
   if (onboardingMessage) onboardingMessage.classList.add('hidden');
 
   // V8：首次打开面板时，先查询后端状态，确认不是已锁定角色再展示面板
-  if (onboardingV8 && !onboardingV8State._v8Initialized) {
+  const shouldRefreshOnboarding = onboardingV8 && (
+    !onboardingV8State._v8Initialized
+    || onboardingV8State.phase === 'api-required'
+    || onboardingV8State.phase === 'error'
+  );
+  if (shouldRefreshOnboarding) {
     onboardingV8State._v8Initialized = true;
     setOnboardingV8Phase('busy');
     try {
@@ -2416,17 +2433,8 @@ function collectOnboardingV8CardAnswer(question, optionsWrap, otherInput) {
     return;
   }
 
-  // 确定回答类型
-  let answerType = question.type;
-  if (question.type === 'hybrid') {
-    if (selectedOptionIds.length > 0 && customText) {
-      answerType = 'hybrid';
-    } else if (selectedOptionIds.length > 0) {
-      answerType = selectedOptionIds.length > 1 ? 'multiple_choice' : 'single_choice';
-    } else {
-      answerType = 'text';
-    }
-  }
+  // answerType 始终等于 question.type（反映问题类型，不根据用户回答形式重新推断）
+  const answerType = question.type;
 
   const answer = {
     questionId: question.id,
@@ -3769,6 +3777,7 @@ bindEvent(calendarEditPlan, 'click', calendarEditCurrentPlan);
 bindEvent(calendarCreatePlan, 'click', calendarCreateForDate);
 bindEvent(stateToggle, 'click', openStatePanel);
 bindEvent(stateClose, 'click', closeStatePanel);
+bindEvent(onboardingClose, 'click', closeOnboardingPanel);
 bindEvent(materialLibraryBtn, 'click', openMaterialPanel);
 bindEvent(materialBack, 'click', returnToStateFromMaterialPanel);
 bindEvent(importMaterialBtn, 'click', importMaterial);
@@ -3934,8 +3943,15 @@ startClockWatcher();
 setTimeout(() => showBubble(t('startupBubble'), 7000), 1200);
 
 // V8 角色初始化：启动后异步同步一次后端状态，避免已锁定角色在首次交互时被误判为未初始化
-setTimeout(() => {
+setTimeout(async () => {
   if (!onboardingV8 || !window.petAPI?.onboardingGetState) return;
+  // 清除全部数据后的首次启动没有 API Key。此时只读 onboarding 状态并不代表
+  // renderer 已经具备启动模型向导的条件，不能提前设置 _v8Initialized=true。
+  if (!(await hasOnboardingApiKey())) {
+    onboardingV8State._v8Initialized = false;
+    onboardingV8State.phase = 'api-required';
+    return;
+  }
   window.petAPI.onboardingGetState()
     .then((resp) => {
       if (!resp) return;

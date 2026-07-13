@@ -87,10 +87,15 @@ export function processAnswers(input: AnswerProcessorInput): AnswerProcessorOutp
       continue;
     }
 
-    // 校验 answerType 与 question.type 一致
+    // 校验 answerType 与 question.type 兼容
+    // hybrid 类型支持纯选项/纯文本/混合三种回答形式，允许 text/single_choice/multiple_choice/hybrid
     if (answer.answerType !== question.type) {
-      errors.push(`问题 "${question.question}" 的回答类型(${answer.answerType})与问题类型(${question.type})不匹配`);
-      continue;
+      const isHybridCompatible = question.type === 'hybrid' &&
+        ['text', 'single_choice', 'multiple_choice', 'hybrid'].includes(answer.answerType);
+      if (!isHybridCompatible) {
+        errors.push(`问题 "${question.question}" 的回答类型(${answer.answerType})与问题类型(${question.type})不匹配`);
+        continue;
+      }
     }
 
     const fields = question.fieldPaths.filter((f) => FIELD_SET.has(f));

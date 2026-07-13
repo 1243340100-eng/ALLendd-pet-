@@ -410,9 +410,9 @@ export const FIELD_QUESTION_META: Record<DraftFieldName, {
   },
   userPetName: {
     type: 'text',
-    question: '你希望角色怎么叫你？（角色对你的称呼）',
-    description: '这是角色用来称呼你的名字，例如"主人"、"哥哥"、"小伙伴"',
-    placeholder: '角色对你的称呼，如"主人"',
+    question: '你希望桌宠怎么称呼你？（桌宠叫你时用的名字）',
+    description: '这是桌宠称呼你时用的名字，例如"主人"、"哥哥"、"小伙伴"',
+    placeholder: '桌宠对你的称呼，如"主人"',
     allowOther: false,
     required: true
   },

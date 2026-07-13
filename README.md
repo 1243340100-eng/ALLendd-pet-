@@ -64,24 +64,53 @@
 
 ## 快速开始
 
+> **重要说明**：GitHub 仓库只包含源码，**不包含打包好的 .exe 应用程序和 dist/ 编译产物**（它们被 .gitignore 排除，因为体积大且每次构建不同）。下载源码后需要先构建才能运行。构建步骤见下文。
+
 ### 环境要求
 
 - Node.js 18+
 - Windows 10+（当前仅支持 Windows）
 - npm
 
-### 安装与运行
+### 方式一：开发模式运行（推荐用于调试）
+
+从 GitHub 下载源码后，在项目根目录执行：
 
 ```powershell
-# 安装依赖（会自动 rebuild better-sqlite3）
+# 1. 安装依赖（会自动 rebuild better-sqlite3）
 npm install
 
-# 启动开发版
-npm start
-
-# 编译 TypeScript（修改 src/ 后必须运行）
+# 2. 编译 TypeScript 到 dist/（必须执行，否则 LangGraph 新架构无法加载）
 npm run build:ts
+
+# 3. 启动应用
+npm start
 ```
+
+### 方式二：打包成 .exe 运行（推荐用于分发）
+
+```powershell
+# 1. 安装依赖
+npm install
+
+# 2. 编译 TypeScript
+npm run build:ts
+
+# 3. 打包（二选一）
+npm run pack    # 打包测试版：生成 release-ui-fix/win-unpacked/PetFramework.exe
+npm run dist    # 打包便携版：生成 release/PetFramework 1.6.0.exe
+```
+
+打包完成后，应用程序位置：
+
+| 命令 | 产物路径 | 说明 |
+|------|----------|------|
+| `npm run pack` | `release-ui-fix/win-unpacked/PetFramework.exe` | 未打包的测试版，启动快，便于调试 |
+| `npm run dist` | `release/PetFramework 1.6.0.exe` | 单文件便携版，可直接发给其他 Windows 电脑 |
+
+双击对应的 .exe 即可启动，**不需要安装 Node.js 或 Electron**。
+
+### 首次启动配置
 
 启动后：
 1. 在设置面板填入 AI 服务商 API Key
@@ -89,14 +118,17 @@ npm run build:ts
 3. 完成角色初始化向导（问题卡片采集）
 4. 开始对话
 
-### 打包
+### 验证 LangGraph 新架构是否加载成功
+
+启动后查看状态面板的"Agent 架构状态"：
+- `langgraph_ready` — 新架构加载成功，五大 Graph 可用
+- `initialization_failed` — 加载失败（红色警告），不会静默回退到旧链路
+
+如需自动化验证打包产物，执行：
 
 ```powershell
-# 打包测试版（生成 release-ui-fix/win-unpacked/PetFramework.exe）
-npm run pack
-
-# 打包便携版（生成 release/PetFramework 1.6.0.exe）
-npm run dist
+# 需先执行 npm run pack 生成打包产物
+npm run test:packaged-new-arch
 ```
 
 ## 项目结构

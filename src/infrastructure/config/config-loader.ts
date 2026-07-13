@@ -66,10 +66,10 @@ export function getDefaultAppConfig(): AppConfig {
   return {
     defaultModelMode: 'balanced',
     modelAliases: {
-      fastModel: 'deepseek-chat',
-      balancedModel: 'deepseek-chat',
+      fastModel: 'deepseek-v4-flash',
+      balancedModel: 'deepseek-v4-flash',
       reasoningModel: 'deepseek-reasoner',
-      planningModel: 'deepseek-chat'
+      planningModel: 'deepseek-v4-pro'
     },
     tokenLimits: {
       lowCost: { inputMaxTokens: 8000, outputMaxTokens: 1024 },

@@ -119,6 +119,8 @@ const onboardingV8Feedback = document.getElementById('onboardingV8Feedback');
 const onboardingV8ReviseBtn = document.getElementById('onboardingV8ReviseBtn');
 const onboardingV8ErrorText = document.getElementById('onboardingV8ErrorText');
 const onboardingV8RetryBtn = document.getElementById('onboardingV8RetryBtn');
+const onboardingV8ConfigureApiBtn = document.getElementById('onboardingV8ConfigureApiBtn');
+const onboardingV8DismissBtn = document.getElementById('onboardingV8DismissBtn');
 const onboardingV8CloseBtn = document.getElementById('onboardingV8CloseBtn');
 // V9 问题卡片相关元素
 const onboardingV8Guide = document.getElementById('onboardingV8Guide');
@@ -803,14 +805,14 @@ async function openApiPanel() {
   window.petAPI?.requestChatSpace?.(PANEL_EXTRA_HEIGHT);
   const config = await window.petAPI?.getApiConfig?.();
   apiEndpoint.value = config?.endpoint || 'https://api.deepseek.com/v1/chat/completions';
-  apiModel.value = config?.model || 'deepseek-chat';
+  apiModel.value = config?.model || 'deepseek-v4-flash';
   apiKey.value = '';
   // 加载 planningModel 配置值（从 app_settings.model_alias_planning 读取）
   try {
     const modelInfo = await window.petAPI?.getPlanningModelInfo?.();
-    planningModelInput.value = modelInfo?.ok?.configured || modelInfo?.info?.configured || '';
+    planningModelInput.value = modelInfo?.ok?.configured || modelInfo?.info?.configured || 'deepseek-v4-pro';
   } catch {
-    planningModelInput.value = '';
+    planningModelInput.value = 'deepseek-v4-pro';
   }
   const reminderSettings = getReminderSettings();
   drinkReminderText.value = reminderSettings.drinkText;
@@ -909,6 +911,10 @@ async function saveApiSettings(clearApiKey = false) {
       showBubble(t('encryptionUnavailable'), 8000);
     } else {
       showBubble(config?.hasApiKey ? t('apiSaveBubble') : t('apiSaveEmptyBubble'), 5000);
+    }
+    if (config?.hasApiKey && onboardingV8State.phase === 'api-required') {
+      showBubble('API 已保存，现在可以开始角色初始化。', 5000);
+      await openOnboardingPanel();
     }
   } catch {
     apiStatus.dataset.statusKey = 'saveFailed';
@@ -1556,12 +1562,35 @@ async function resetUserData() {
 // ===== Onboarding 首次配置面板 =====
 // V10：改为 async，先异步确认状态再决定是否显示面板。
 // 目的：避免已锁定角色在冷启动时先闪现“角色配置已锁定”界面再隐藏。
+async function hasOnboardingApiKey() {
+  try {
+    const config = await window.petAPI?.getApiConfig?.();
+    return Boolean(config?.hasApiKey);
+  } catch {
+    return false;
+  }
+}
+
+async function openOnboardingApiSetup() {
+  onboardingV8State.phase = 'api-required';
+  onboardingV8State.pendingBusy = false;
+  clearPendingAnswersTimer();
+  showBubble('请先配置 API Key；保存后会自动进入角色初始化。', 6500);
+  await openApiPanel();
+}
+
 async function openOnboardingPanel(message) {
   closeMaterialPanel();
   closeCalendarPanel();
   closeApiPanel();
   closeChatPanel();
   closeStatePanel();
+  // 重置会清除 API 配置。没有 Key 时不得自动启动需要模型的 OnboardingGraph，
+  // 先进入可关闭的 API 面板，保存成功后再继续初始化。
+  if (!(await hasOnboardingApiKey())) {
+    await openOnboardingApiSetup();
+    return;
+  }
   if (message && onboardingMessage) {
     onboardingMessage.textContent = message;
   }
@@ -2016,6 +2045,11 @@ function handleOnboardingV8Response(resp) {
 
 /** 启动 V8 向导 */
 async function startOnboardingV8() {
+  // 防御性校验：即使未来有别的入口直接调用 start，也不会在未配置 Key 时发起模型请求。
+  if (!(await hasOnboardingApiKey())) {
+    await openOnboardingApiSetup();
+    return;
+  }
   setOnboardingV8Phase('busy');
   if (onboardingV8Chat) onboardingV8Chat.innerHTML = '';
   onboardingV8State.lastPendingQuestion = '';
@@ -2115,6 +2149,10 @@ async function confirmOnboardingV8Summary() {
  * model_unavailable 错误时引导用户打开 API 设置。
  */
 async function retryOnboardingV8() {
+  if (!(await hasOnboardingApiKey())) {
+    await openOnboardingApiSetup();
+    return;
+  }
   const op = onboardingV8State.lastOperation;
   if (!op) {
     // 没有上次操作记录，回退到获取状态
@@ -2957,7 +2995,7 @@ async function refreshPlanningModelInfo() {
     }
     const info = result.info;
     const pairs = [
-      ['已配置', info.configured || '(默认 deepseek-chat)'],
+      ['已配置', info.configured || '(默认 deepseek-v4-flash)'],
       ['请求模型', info.resolvedModel || '未解析'],
       ['API 返回', info.responseModel || '未调用']
     ];
@@ -3852,6 +3890,21 @@ if (onboardingV8ReviseBtn) {
 if (onboardingV8RetryBtn) {
   onboardingV8RetryBtn.addEventListener('click', () => {
     retryOnboardingV8();
+  });
+}
+
+if (onboardingV8ConfigureApiBtn) {
+  onboardingV8ConfigureApiBtn.addEventListener('click', () => {
+    onboardingV8State.phase = 'api-required';
+    openApiPanel();
+  });
+}
+
+if (onboardingV8DismissBtn) {
+  onboardingV8DismissBtn.addEventListener('click', () => {
+    onboardingV8State.phase = 'api-required';
+    closeOnboardingPanel();
+    showBubble('初始化已暂停；需要时可从设置中配置 API Key 后继续。', 5500);
   });
 }
 

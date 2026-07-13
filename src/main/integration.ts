@@ -1689,7 +1689,7 @@ export function getPlanningModelInfo(): {
   let warning: string | null = null;
   if (!configured) {
     modelConsistent = false;
-    warning = 'planningModel 未配置，使用默认值 deepseek-chat';
+    warning = 'planningModel 未配置，使用默认值 deepseek-v4-pro';
   } else if (resolvedModel && configured !== resolvedModel) {
     modelConsistent = false;
     warning = `配置值 (${configured}) 与实际发送值 (${resolvedModel}) 不一致`;

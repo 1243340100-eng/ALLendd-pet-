@@ -43,11 +43,11 @@
         </label>
         <label>
           <span>模型</span>
-          <input id="apiModel" type="text" autocomplete="off">
+          <input id="apiModel" type="text" autocomplete="off" placeholder="默认 deepseek-v4-flash">
         </label>
         <label>
           <span>计划模型 ID</span>
-          <input id="planningModelInput" type="text" autocomplete="off" placeholder="例如 deepseek-chat">
+          <input id="planningModelInput" type="text" autocomplete="off" placeholder="例如 deepseek-v4-pro">
         </label>
         <label>
           <span>API Key</span>
@@ -297,7 +297,11 @@
           <!-- error 阶段：错误提示 + 重试 -->
           <div id="onboardingV8Error" class="onboarding-v8__phase onboarding-v8__phase--error hidden">
             <div id="onboardingV8ErrorText" class="onboarding-v8__error-text"></div>
-            <button type="button" id="onboardingV8RetryBtn" class="onboarding-v8__btn onboarding-v8__btn--primary">重试</button>
+            <div class="onboarding-v8__actions onboarding-v8__error-actions">
+              <button type="button" id="onboardingV8ConfigureApiBtn" class="onboarding-v8__btn onboarding-v8__btn--primary">配置 API</button>
+              <button type="button" id="onboardingV8RetryBtn" class="onboarding-v8__btn onboarding-v8__btn--secondary">重试</button>
+              <button type="button" id="onboardingV8DismissBtn" class="onboarding-v8__btn onboarding-v8__btn--secondary">暂不配置</button>
+            </div>
           </div>
 
           <!-- locked 阶段：完成 -->

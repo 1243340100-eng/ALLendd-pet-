@@ -447,7 +447,7 @@ function scheduleWindowLayout() {
 const defaultApiConfig = {
   provider: 'deepseek',
   endpoint: 'https://api.deepseek.com/v1/chat/completions',
-  model: 'deepseek-chat',
+  model: 'deepseek-v4-flash',
   apiKey: ''
 };
 const profileSummaryIntervalMs = 3 * 24 * 60 * 60 * 1000;
@@ -2125,6 +2125,22 @@ ipcMain.handle('onboarding:start', async (_event, payload) => {
       revision: validated?.revision ?? 0,
       isCompleted: false,
       errorReason: 'new-arch-not-ready',
+      traceId: '',
+      pendingAnswers: null
+    };
+  }
+  // Factory reset intentionally removes api-config.json. Do not let a stale or
+  // future renderer entry point start an LLM-backed wizard without a key.
+  if (!readApiConfig({ includeSecret: true }).hasApiKey) {
+    return {
+      phase: 'error',
+      currentStage: 'basic',
+      pendingQuestion: '',
+      completionProgress: 0,
+      summaryDisplayText: null,
+      revision: validated?.revision ?? 0,
+      isCompleted: false,
+      errorReason: 'api-key-required',
       traceId: '',
       pendingAnswers: null
     };

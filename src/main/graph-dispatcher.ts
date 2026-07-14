@@ -267,7 +267,7 @@ export class GraphDispatcher {
 
       // 构造 scope_key：与 load_checkpoint 节点使用相同逻辑
       const userId = settingsRepository.get('user_id') || 'anonymous';
-      const characterId = settingsRepository.get('active_character_id') || 'default';
+      const characterId = this.getOnboardingCharacterId();
       const threadId = 'default-onboarding';
       const scopeKey = `${userId}:${characterId}:${threadId}`;
 
@@ -329,11 +329,23 @@ export class GraphDispatcher {
   // ===== P2: pendingAnswers 临时保存/清除 =====
 
   /**
+   * 获取 Onboarding 期间使用的 characterId。
+   * 角色锁定前 active_character_id 未设置，使用默认角色包 manifest.id（与 validate_character_pack 节点一致）。
+   * 角色锁定后使用 active_character_id。
+   */
+  private getOnboardingCharacterId(): string {
+    const activeId = settingsRepository.get('active_character_id');
+    if (activeId) return activeId;
+    const pack = this.characterPackManager.getActivePack();
+    return pack?.manifest?.id || 'default';
+  }
+
+  /**
    * 构造 onboarding scope_key（与 load_checkpoint 节点使用相同逻辑）。
    */
   private buildOnboardingScopeKey(): string {
     const userId = settingsRepository.get('user_id') || 'anonymous';
-    const characterId = settingsRepository.get('active_character_id') || 'default';
+    const characterId = this.getOnboardingCharacterId();
     const threadId = 'default-onboarding';
     return `${userId}:${characterId}:${threadId}`;
   }
@@ -532,7 +544,7 @@ export class GraphDispatcher {
     try {
       // 1. 构造 scope_key（与 load_checkpoint 一致）
       const userId = settingsRepository.get('user_id') || 'anonymous';
-      const characterId = settingsRepository.get('active_character_id') || 'default';
+      const characterId = this.getOnboardingCharacterId();
       const threadId = 'default-onboarding';
       const scopeKey = `${userId}:${characterId}:${threadId}`;
 

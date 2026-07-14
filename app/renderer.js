@@ -490,7 +490,10 @@ function applyPetProfile() {
   document.title = petProfile.displayName || 'Pet Framework';
   pet.setAttribute('aria-label', petProfile.characterName || 'Pet');
   // 同步更新聊天输入框 placeholder，使角色初始化后使用新角色名
-  chatInput.placeholder = t('chatPlaceholder', { name: petProfile.characterName || 'Pet' });
+  // 计划模式期间不覆盖专用 placeholder
+  if (!planningMode) {
+    chatInput.placeholder = t('chatPlaceholder', { name: petProfile.characterName || 'Pet' });
+  }
   const sheetWidth = Math.max(cell.width, Number(petProfile.spriteSheetSize?.width) || 1536);
   const sheetHeight = Math.max(cell.height, Number(petProfile.spriteSheetSize?.height) || 1872);
   document.documentElement.style.setProperty('--cell-w', `${cell.width}px`);
